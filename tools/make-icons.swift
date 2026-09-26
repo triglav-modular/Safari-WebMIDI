@@ -27,7 +27,7 @@ func render(_ size: Int, _ draw: (CGContext, CGFloat) -> Void) -> Data {
     NSGraphicsContext.restoreGraphicsState()
     return rep.representation(using: .png, properties: [:])!
 }
-func glyph(_ cg: CGContext, in rect: CGRect, white: Bool = false) {
+func glyph(_ cg: CGContext, in rect: CGRect, white: Bool = false, color: CGColor? = nil) {
     cg.saveGState()
     if white { cg.beginTransparencyLayer(auxiliaryInfo: nil) }
     let scale = min(rect.width / box.width, rect.height / box.height)
@@ -37,7 +37,7 @@ func glyph(_ cg: CGContext, in rect: CGRect, white: Bool = false) {
     if white {
         // Keep the glyph's coverage, change its colour.
         cg.setBlendMode(.sourceIn)
-        cg.setFillColor(glyphWhite)
+        cg.setFillColor(color ?? glyphWhite)
         cg.fill(CGRect(x: box.minX, y: box.minY, width: box.width, height: box.height))
         cg.endTransparencyLayer()
     }
@@ -76,26 +76,22 @@ func flat(_ rounded: Bool) -> (CGContext, CGFloat) -> Void {
         glyph(cg, in: r.insetBy(dx: s * 0.14, dy: s * 0.14), white: true)
     }
 }
-// The tab favicon: the glyph in the icon's white over a black disc, its ring
-// 2% of the diameter heavier than the glyph's.  Safari's tab bar (27) backs a
+// The tab favicon matches Triglav Modular's: its grainy black square
+// (favicon-background.png, the background layers of Triglav_Modular_Designs/
+// triglav_modular_favicon.psd) with the glyph in pure white over the same
+// box as Triglav's glyph, 59-453 of 512.  Safari's tab bar (27) backs a
 // favicon with a plate of its own: white in dark mode when the icon's key
-// colour, which is weighted to its outer part, is dark and holds over half of
-// it; black in light mode when every edge of the icon is light.  So any black
-// tile or square takes the white plate in dark mode.  Here the ring holds the
-// outer part, neither plate comes, and the disc shows as drawn on both bars.
-// The disc's edge sits under the middle of the ring, so no black shows
-// outside it.  The page links favicon.ico, which holds it at 16 and 32 px.
-let ringWidth: CGFloat = 84.0 / 1024   // the glyph's ring, as a fraction of its diameter
+// colour is dark and holds over half of it; black in light mode when every
+// edge is light.  A flat black square takes the white plate.  This grain and
+// gradient keep any one colour under half of it, so neither plate comes.
+// The page links favicon.ico, which holds it at 16 and 32 px.
+let faviconBackground = NSImage(contentsOf: URL(fileURLWithPath: args[1]).deletingLastPathComponent()
+    .appendingPathComponent("favicon-background.png"))!
 func favicon(_ cg: CGContext, _ s: CGFloat) {
     let r = CGRect(x: 0, y: 0, width: s, height: s)
-    cg.addEllipse(in: r.insetBy(dx: s * ringWidth / 2, dy: s * ringWidth / 2))
-    cg.setFillColor(CGColor(gray: 0, alpha: 1)); cg.fillPath()
-    glyph(cg, in: r, white: true)
-    // Thicken the ring inward, leaving its outer edge to the glyph.
-    let band = s * (ringWidth / 2 + 0.02)
-    let inset = s * ringWidth / 2 + band / 2
-    cg.setStrokeColor(glyphWhite); cg.setLineWidth(band)
-    cg.strokeEllipse(in: r.insetBy(dx: inset, dy: inset))
+    NSGraphicsContext.current!.imageInterpolation = .high
+    faviconBackground.draw(in: r)
+    glyph(cg, in: r.insetBy(dx: s * 59 / 512, dy: s * 59 / 512), white: true, color: CGColor(gray: 1, alpha: 1))
 }
 for s in [16, 32, 96] { write("favicon-\(s).png", render(s, favicon)) }
 // Safari keeps a page's favicon for seven days.  Before then it takes a new
