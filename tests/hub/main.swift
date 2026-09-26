@@ -99,11 +99,11 @@ DispatchQueue.global().async {
     Thread.sleep(forTimeInterval: 0.4)
     arrivalsLock.lock(); let first = arrivals.first; arrivalsLock.unlock()
     // The time CoreMIDI was given is the exact check; when it arrives also
-    // depends on how busy the machine is (88 ms late once on a CI runner),
-    // so that bound is loose.
+    // depends on how busy the machine is (88 and 65 ms late on CI runners,
+    // under 5 ms on a Mac), so that bound only catches a send never held.
     check("a timestamped send is handed to CoreMIDI for its time", first.map { abs($0.2 - due) < 1 } ?? false,
           first.map { "\(String(format: "%.2f", $0.2 - due)) ms off" } ?? "never arrived")
-    check("and arrives about then", first.map { abs($0.0 - due) < 50 } ?? false,
+    check("and arrives about then", first.map { abs($0.0 - due) < 150 } ?? false,
           first.map { "\(String(format: "%.1f", $0.0 - due)) ms off" } ?? "never arrived")
     _ = collect(from: &cursor, count: 1, ms: 500)
 
