@@ -33,7 +33,12 @@ export default {
       const value = request.headers.get(name);
       if (value) headers.set(name, value);
     }
-    const res = await fetch(ORIGIN + rest + url.search, { method: request.method, headers, redirect: 'follow' });
+    // Not through Cloudflare's cache: it kept GitHub Pages' ten minutes on a
+    // subrequest, so a pushed stylesheet went out with the old one for up to
+    // ten minutes after the page itself had changed.  Browsers still keep
+    // everything and revalidate it (no-cache, below), which costs a 304.
+    const res = await fetch(ORIGIN + rest + url.search,
+                            { method: request.method, headers, redirect: 'follow', cache: 'no-store' });
     const out = new Response(res.status === 304 ? null : res.body, res);
     out.headers.set('x-served-by', 'safari-webmidi-proxy');
     if (!(res.ok || res.status === 304)) {
