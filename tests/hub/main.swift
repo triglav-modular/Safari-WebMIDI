@@ -22,12 +22,15 @@ func unb64(_ s: Any) -> [UInt8] { [UInt8](Data(base64Encoded: s as? String ?? ""
 func now() -> Double { Date().timeIntervalSince1970 * 1000 }
 
 var client = MIDIClientRef(), src = MIDIEndpointRef(), dst = MIDIEndpointRef()
-var arrivals: [(Double, Int)] = []   // wall ms and word count at the destination
+// Wall ms of arrival, word count, and the time CoreMIDI says the event is
+// for (wall ms, from its host timestamp).
+var arrivals: [(Double, Int, Double)] = []
 let arrivalsLock = NSLock()
 MIDIClientCreateWithBlock("loop" as CFString, &client, nil)
 MIDISourceCreateWithProtocol(client, "WM Loop" as CFString, ._1_0, &src)
 MIDIDestinationCreateWithProtocol(client, "WM Loop" as CFString, ._1_0, &dst) { list, _ in
-    arrivalsLock.lock(); arrivals.append((now(), Int(list.pointee.packet.wordCount))); arrivalsLock.unlock()
+    let stamp = MIDIHub.wallMillis(atHost: list.pointee.packet.timeStamp)
+    arrivalsLock.lock(); arrivals.append((now(), Int(list.pointee.packet.wordCount), stamp)); arrivalsLock.unlock()
     MIDIReceivedEventList(src, list)
 }
 
@@ -94,8 +97,14 @@ DispatchQueue.global().async {
     let due = now() + 250
     _ = ask(["cmd": "send", "msgs": [[out, b64([0x90, 64, 1]), due]]])
     Thread.sleep(forTimeInterval: 0.4)
-    arrivalsLock.lock(); let when = arrivals.first?.0; arrivalsLock.unlock()
-    check("a timestamped send arrives on time", when.map { abs($0 - due) < 5 } ?? false, when.map { "\(String(format: "%.1f", $0 - due)) ms off" } ?? "never arrived")
+    arrivalsLock.lock(); let first = arrivals.first; arrivalsLock.unlock()
+    // The time CoreMIDI was given is the exact check; when it arrives also
+    // depends on how busy the machine is (88 ms late once on a CI runner),
+    // so that bound is loose.
+    check("a timestamped send is handed to CoreMIDI for its time", first.map { abs($0.2 - due) < 1 } ?? false,
+          first.map { "\(String(format: "%.2f", $0.2 - due)) ms off" } ?? "never arrived")
+    check("and arrives about then", first.map { abs($0.0 - due) < 50 } ?? false,
+          first.map { "\(String(format: "%.1f", $0.0 - due)) ms off" } ?? "never arrived")
     _ = collect(from: &cursor, count: 1, ms: 500)
 
     // clear() unschedules what has not played yet.
