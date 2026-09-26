@@ -138,10 +138,12 @@ lays out the extension's files.
 
 ```bash
 node tests/shim/test-clear.js
+node tests/shim/test-clock.js
 ```
 
 The page script in Node against a fake content script, for what the harness
-cannot stage: sends queued behind one that has not come back.
+cannot stage: sends queued behind one that has not come back, and a wall
+clock corrected while a page is open.
 
 `.github/workflows/tests.yml` runs all of these on every push.
 

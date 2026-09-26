@@ -151,6 +151,7 @@ final class Harness: NSObject, WKScriptMessageHandlerWithReply, WKScriptMessageH
     static let safariRefusal = "Invalid call to runtime.sendNativeMessage(). The operation couldn\u{2019}t be completed. (SFErrorDomain error 3.)"
     var held: [Date] = []
     var refusals = 0, peak = 0, refuseNext = 0
+    var lastStarted = "(none)"
 
     func nextNative() {
         guard !nativeBusy, !nativeQueue.isEmpty else { return }
@@ -329,7 +330,11 @@ final class Harness: NSObject, WKScriptMessageHandlerWithReply, WKScriptMessageH
     }
 
     func userContentController(_ u: WKUserContentController, didReceive m: WKScriptMessage) {
-        if m.name == "progress" { if verbose { log("  .. \(m.body)") }; return }
+        if m.name == "progress" {
+            if let b = m.body as? String, b.hasPrefix("start: ") { lastStarted = String(b.dropFirst(7)) }
+            if verbose { log("  .. \(m.body)") }
+            return
+        }
         if m.name == "frameHello" {
             if !m.frameInfo.isMainFrame, let u = m.frameInfo.request.url?.absoluteString { frames[frameHash(u)] = m.frameInfo }
             return
@@ -350,6 +355,10 @@ final class Harness: NSObject, WKScriptMessageHandlerWithReply, WKScriptMessageH
         switch a["action"] as? String {
         case "plug": plug(a["name"] as! String); reply(true, nil)
         case "unplug": unplug(a["name"] as! String); reply(true, nil)
+        case "mark":
+            // The harness's clock now, which the arrivals are dated by: a test
+            // compares times on this one clock, never with the page's.
+            reply(Date().timeIntervalSince1970 * 1000, nil)
         case "arrivals":
             // [ms, first UMP word] for everything that reached a loop since `from` ms.
             let from = a["from"] as? Double ?? 0
@@ -464,5 +473,8 @@ let app = NSApplication.shared
 app.setActivationPolicy(.prohibited)
 let harness = Harness()
 harness.start()
-DispatchQueue.main.asyncAfter(deadline: .now() + (verbose ? 40 : 120)) { log("timeout: the page never reported"); exit(1) }
+DispatchQueue.main.asyncAfter(deadline: .now() + (verbose ? 40 : 180)) {
+    log("timeout: the page never reported; the last test to start was \u{201C}\(harness.lastStarted)\u{201D}")
+    exit(1)
+}
 app.run()

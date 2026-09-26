@@ -17,7 +17,7 @@ jobs:
       - name: CoreMIDI hub
         run: ./tools/test-hub.sh
       - name: Page script (Node)
-        run: node tests/shim/test-clear.js
+        run: node tests/shim/test-clear.js && node tests/shim/test-clock.js
       - name: WebKit end to end
         run: ./tools/test-webkit.sh
       - name: web-platform-tests

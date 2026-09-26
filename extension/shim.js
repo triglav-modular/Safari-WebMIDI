@@ -24,6 +24,23 @@
 
     var TOKEN = {};                                      // "Illegal constructor" unless ours
 
+    // --- time --------------------------------------------------------------------
+    // The native side keeps time by the wall clock, so page times cross as
+    // wall-clock milliseconds.  performance.timeOrigin is fixed when the page
+    // loads, and a wall clock corrected after that leaves it behind (by about
+    // 40 ms in a CI run: sends went out that late, and arrivals were dated
+    // that early).  So the offset is checked against the wall clock on every
+    // use and taken up when it has moved more than 3 ms; Date.now() has whole
+    // milliseconds, and a smaller threshold would move equal times apart.
+    // Taken before the page's own scripts run, so a page cannot restyle time.
+    var wallNow = Date.now, pageNow = performance.now.bind(performance), wallOffset = null;
+    function pageToWall() {
+        var fresh = wallNow() - pageNow();
+        if (wallOffset === null) wallOffset = root.performance.timeOrigin;
+        if (Math.abs(fresh - wallOffset) > 3) wallOffset = fresh;
+        return wallOffset;
+    }
+
     // --- the channel to content.js -------------------------------------------
     var channel = null, nextId = 0, pending = new Map(), listeners = new Map();
     function connect() {
@@ -349,7 +366,7 @@
                 if (!isFinite(ms)) throw new TypeError("Failed to execute 'send' on 'MIDIOutput': The provided double value is non-finite.");
             }
             // Blink: 0 means now; anything else is relative to the time origin.
-            var wall = ms === 0 ? 0 : root.performance.timeOrigin + ms;
+            var wall = ms === 0 ? 0 : pageToWall() + ms;
             // Implicit open, even when the data turns out to be invalid.
             this.__open();
             validate(bytes, this.__access.__sysex);
@@ -550,7 +567,7 @@
                 var wait = self.listening() && !sending() ? self.LISTEN_WAIT : 0;
                 call('recv', { since: self.cursor, gen: self.gen, wait: wait }).then(function (r) {
                     self.cursor = r.seq;
-                    var origin = root.performance.timeOrigin;
+                    var origin = pageToWall();
                     (r.events || []).forEach(function (ev) {
                         var id = String(ev[0]), ts = ev[2] - origin;
                         accesses.forEach(function (a) {

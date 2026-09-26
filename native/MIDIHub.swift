@@ -96,22 +96,20 @@ final class MIDIHub {
     // Wall clock minus host clock, in nanoseconds, read once and reused:
     // reading both clocks for every message put equal times a few ticks
     // apart either way, and sends given the same time came out in either
-    // order (the audit measured 52-69 of 120 pairs reversed).  Re-read at most
-    // every ten seconds, and taken up only when the clocks have drifted more
-    // than a millisecond, so equal times map to equal host times.
+    // order (the audit measured 52-69 of 120 pairs reversed).  Re-read on
+    // every use but taken up only when the clocks have drifted more than a
+    // millisecond, so equal times map to equal host times, and a wall clock
+    // that is corrected (by about 40 ms in a CI run) is followed at once
+    // rather than up to ten seconds later.
     private static let offsetLock = NSLock()
     private static var offsetNs: Double = measureOffset()
-    private static var offsetAt = Date()
     private static func measureOffset() -> Double {
         Date().timeIntervalSince1970 * 1e9 - hostToNanos(mach_absolute_time())
     }
     static func wallMinusHostNs() -> Double {
         offsetLock.lock(); defer { offsetLock.unlock() }
-        if Date().timeIntervalSince(offsetAt) > 10 {
-            let fresh = measureOffset()
-            if abs(fresh - offsetNs) > 1e6 { offsetNs = fresh }
-            offsetAt = Date()
-        }
+        let fresh = measureOffset()
+        if abs(fresh - offsetNs) > 1e6 { offsetNs = fresh }
         return offsetNs
     }
     // The host time of a wall-clock instant, whether past or future: a past
