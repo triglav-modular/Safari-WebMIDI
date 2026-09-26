@@ -34,8 +34,11 @@ let verbose = ProcessInfo.processInfo.environment["WEBMIDI_VERBOSE"] != nil
 var client = MIDIClientRef()
 MIDIClientCreateWithBlock("webkit harness" as CFString, &client, nil)
 var loops: [String: (MIDIEndpointRef, MIDIEndpointRef)] = [:]
-// What reached a loop's destination, and when (wall-clock ms), so a test can
-// time a send where it arrives, without the receive path's own delay.
+// What reached a loop's destination, and when, so a test can time a send
+// where it arrives, without the receive path's own delay.  Dated by uptime,
+// not the wall clock: a CI runner's wall clock was corrected by tens of
+// milliseconds mid-run, and arrivals just after a mark were dated before it.
+func harnessMillis() -> Double { ProcessInfo.processInfo.systemUptime * 1000 }
 var arrivals: [(Double, UInt32)] = []
 let arrivalsLock = NSLock()
 // A loop: what reaches the destination comes back out of the source.
@@ -44,7 +47,7 @@ func plug(_ name: String) {
     MIDISourceCreateWithProtocol(client, name as CFString, ._1_0, &src)
     let s = src
     MIDIDestinationCreateWithProtocol(client, name as CFString, ._1_0, &dst) { list, _ in
-        let now = Date().timeIntervalSince1970 * 1000
+        let now = harnessMillis()
         arrivalsLock.lock()
         for packet in list.unsafeSequence() where packet.pointee.wordCount > 0 {
             arrivals.append((now, packet.pointee.words.0))
@@ -358,7 +361,7 @@ final class Harness: NSObject, WKScriptMessageHandlerWithReply, WKScriptMessageH
         case "mark":
             // The harness's clock now, which the arrivals are dated by: a test
             // compares times on this one clock, never with the page's.
-            reply(Date().timeIntervalSince1970 * 1000, nil)
+            reply(harnessMillis(), nil)
         case "arrivals":
             // [ms, first UMP word] for everything that reached a loop since `from` ms.
             let from = a["from"] as? Double ?? 0
