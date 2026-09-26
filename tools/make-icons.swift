@@ -84,7 +84,7 @@ func flat(_ rounded: Bool) -> (CGContext, CGFloat) -> Void {
 // tile or square takes the white plate in dark mode.  Here the ring holds the
 // outer part, neither plate comes, and the disc shows as drawn on both bars.
 // The disc's edge sits under the middle of the ring, so no black shows
-// outside it.  The page links the 32 px one only, Safari's size.
+// outside it.  The page links favicon.ico, which holds it at 16 and 32 px.
 let ringWidth: CGFloat = 84.0 / 1024   // the glyph's ring, as a fraction of its diameter
 func favicon(_ cg: CGContext, _ s: CGFloat) {
     let r = CGRect(x: 0, y: 0, width: s, height: s)
@@ -98,6 +98,17 @@ func favicon(_ cg: CGContext, _ s: CGFloat) {
     cg.strokeEllipse(in: r.insetBy(dx: inset, dy: inset))
 }
 for s in [16, 32, 96] { write("favicon-\(s).png", render(s, favicon)) }
+// Safari keeps a page's favicon for seven days.  Before then it takes a new
+// one only if it has several sizes, one exactly 32 px, and the old one had
+// one size; a single-size replacement is rejected, and that rejection blocks
+// every new icon for the page for another seven days.  Hence an .ico.
+let ico = NSMutableData()
+let dest = CGImageDestinationCreateWithData(ico, "com.microsoft.ico" as CFString, 2, nil)!
+for s in [16, 32] {
+    CGImageDestinationAddImageFromSource(dest, CGImageSourceCreateWithData(render(s, favicon) as CFData, nil)!, 0, nil)
+}
+precondition(CGImageDestinationFinalize(dest))
+write("favicon.ico", ico as Data)
 write("apple-touch-icon.png", render(180, flat(false)))
 let set = out.appendingPathComponent("AppIcon.iconset")
 try? FileManager.default.createDirectory(at: set, withIntermediateDirectories: true)
