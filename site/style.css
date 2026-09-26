@@ -204,7 +204,7 @@ h2 {
 /* The download is the page's one action: the width of its box. */
 .button.download { display: block; text-align: center; }
 .button.primary:hover { background: transparent; color: var(--accent); }
-.meta { color: var(--muted); font-size: 14px; margin: 16px 0 0; }
+.meta { color: var(--muted); font-size: 14px; margin: 16px 0 0; text-align: center; }
 .steps {
   margin: 0;
   padding: 0;
