@@ -40,6 +40,19 @@
         if (Math.abs(fresh - wallOffset) > 3) wallOffset = fresh;
         return wallOffset;
     }
+    // A send's time, as wall-clock ms.  A time that comes again gets the wall
+    // time it got before, even if the offset was taken up in between, so a
+    // note-off and note-on given one time stay one time across a correction.
+    var givenWall = new Map();
+    function wallFor(ms) {
+        var w = givenWall.get(ms);
+        if (w === undefined) {
+            w = pageToWall() + ms;
+            givenWall.set(ms, w);
+            if (givenWall.size > 1024) givenWall.delete(givenWall.keys().next().value);
+        }
+        return w;
+    }
 
     // --- the channel to content.js -------------------------------------------
     var channel = null, nextId = 0, pending = new Map(), listeners = new Map();
@@ -366,7 +379,7 @@
                 if (!isFinite(ms)) throw new TypeError("Failed to execute 'send' on 'MIDIOutput': The provided double value is non-finite.");
             }
             // Blink: 0 means now; anything else is relative to the time origin.
-            var wall = ms === 0 ? 0 : pageToWall() + ms;
+            var wall = ms === 0 ? 0 : wallFor(ms);
             // Implicit open, even when the data turns out to be invalid.
             this.__open();
             validate(bytes, this.__access.__sysex);

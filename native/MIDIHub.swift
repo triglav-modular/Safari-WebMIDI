@@ -103,19 +103,37 @@ final class MIDIHub {
     // rather than up to ten seconds later.
     private static let offsetLock = NSLock()
     private static var offsetNs: Double = measureOffset()
+    // The hub test steps the wall clock, as the hub sees it, with this.
+    static var wallStepNs: Double = 0
     private static func measureOffset() -> Double {
-        Date().timeIntervalSince1970 * 1e9 - hostToNanos(mach_absolute_time())
+        Date().timeIntervalSince1970 * 1e9 + wallStepNs - hostToNanos(mach_absolute_time())
     }
-    static func wallMinusHostNs() -> Double {
-        offsetLock.lock(); defer { offsetLock.unlock() }
+    private static func offsetLocked() -> Double {
         let fresh = measureOffset()
         if abs(fresh - offsetNs) > 1e6 { offsetNs = fresh }
         return offsetNs
     }
+    static func wallMinusHostNs() -> Double {
+        offsetLock.lock(); defer { offsetLock.unlock() }
+        return offsetLocked()
+    }
+    // A time that comes again gets the host time it got before, even when
+    // the offset was taken up in between: otherwise a correction landing
+    // between the two sends of a note-off and note-on given one time put
+    // them more than a millisecond apart, reversed (1 of 120 pairs on a CI
+    // runner whose clock is corrected often).  The last 1024 times are kept.
+    private static var given: [Double: UInt64] = [:]
+    private static var givenOrder: [Double] = []
     // The host time of a wall-clock instant, whether past or future: a past
     // time keeps its place in CoreMIDI's order instead of becoming "now".
     static func hostTime(atWallMillis ms: Double) -> UInt64 {
-        nanosToHost(ms * 1e6 - wallMinusHostNs())
+        offsetLock.lock(); defer { offsetLock.unlock() }
+        if let h = given[ms] { return h }
+        let h = nanosToHost(ms * 1e6 - offsetLocked())
+        given[ms] = h
+        givenOrder.append(ms)
+        if givenOrder.count > 1024 { given.removeValue(forKey: givenOrder.removeFirst()) }
+        return h
     }
     static func wallMillis(atHost h: UInt64) -> Double {
         if h == 0 { return wallMillis() }

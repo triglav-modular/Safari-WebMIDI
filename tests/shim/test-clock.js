@@ -74,6 +74,15 @@ const wallOf = async (out, t) => { const n = walls.length; out.send([0x90, 60, 1
     check('equal page times give equal wall times', same.length === 50 && same.every(x => x === same[0]),
           `${new Set(same).size} different of ${same.length}`);
 
+    // A note-off and a note-on given one time, with the wall clock corrected
+    // between the two sends: they must still go over as one time.
+    t = performance.now() + 100;
+    const before = await wallOf(out, t);
+    correction += 40;
+    const after = await wallOf(out, t);
+    check('a time given again gets the same wall time across a correction', before === after,
+          `${(after - before).toFixed(1)} ms apart`);
+
     console.log(failed ? `${failed} FAILED` : 'ALL CLOCK CHECKS PASSED');
     process.exit(failed ? 1 : 0);
 })();

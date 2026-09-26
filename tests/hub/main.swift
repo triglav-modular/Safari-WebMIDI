@@ -119,7 +119,7 @@ DispatchQueue.global().async {
     // Sends given the same time go out in the order they were made: a
     // note-off and the note-on that follows it, 120 pairs, on the held path
     // in one request, in separate requests, and inside the horizon.
-    func pairsReversed(_ label: String, sameRequest: Bool, ahead: Double) -> Int {
+    func pairsReversed(_ label: String, sameRequest: Bool, ahead: Double, step: Double = 0) -> Int {
         _ = collect(from: &cursor, count: 10_000, ms: 300)      // drain
         for i in 0..<120 {
             let due = now() + ahead + Double(i) * 2
@@ -128,7 +128,9 @@ DispatchQueue.global().async {
                 _ = ask(["cmd": "send", "msgs": [[out, off, due], [out, on, due]]])
             } else {
                 _ = ask(["cmd": "send", "msgs": [[out, off, due]]])
+                MIDIHub.wallStepNs += step
                 _ = ask(["cmd": "send", "msgs": [[out, on, due]]])
+                MIDIHub.wallStepNs -= step
             }
         }
         let got = collect(from: &cursor, count: 240, ms: 3000).map { unb64($0[1]) }.filter { $0[0] == 0x81 || $0[0] == 0x91 }
@@ -139,9 +141,12 @@ DispatchQueue.global().async {
         check("\(label): all 240 arrive", got.count == 240, "got \(got.count)")
         return reversed
     }
-    for (label, same, ahead) in [("held, one request", true, 150.0), ("held, separate requests", false, 150.0),
-                                  ("inside the horizon", false, 5.0)] {
-        let r = pairsReversed(label, sameRequest: same, ahead: ahead)
+    // And with the wall clock put forward 5 ms between the two of every pair,
+    // as a correction can land (a CI runner's clock is corrected often).
+    for (label, same, ahead, step) in [("held, one request", true, 150.0, 0.0), ("held, separate requests", false, 150.0, 0.0),
+                                        ("inside the horizon", false, 5.0, 0.0),
+                                        ("the wall clock corrected between them", false, 150.0, 5e6)] {
+        let r = pairsReversed(label, sameRequest: same, ahead: ahead, step: step)
         check("equal times keep their order (\(label))", r == 0, "\(r) of 120 pairs reversed")
     }
 
