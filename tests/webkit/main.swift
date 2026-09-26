@@ -40,6 +40,7 @@ var loops: [String: (MIDIEndpointRef, MIDIEndpointRef)] = [:]
 // milliseconds mid-run, and arrivals just after a mark were dated before it.
 func harnessMillis() -> Double { ProcessInfo.processInfo.systemUptime * 1000 }
 var arrivals: [(Double, UInt32)] = []
+var sharedPackets = 0
 let arrivalsLock = NSLock()
 // A loop: what reaches the destination comes back out of the source.
 func plug(_ name: String) {
@@ -49,8 +50,20 @@ func plug(_ name: String) {
     MIDIDestinationCreateWithProtocol(client, name as CFString, ._1_0, &dst) { list, _ in
         let now = harnessMillis()
         arrivalsLock.lock()
-        for packet in list.unsafeSequence() where packet.pointee.wordCount > 0 {
-            arrivals.append((now, packet.pointee.words.0))
+        // Every message in every packet: CoreMIDI can deliver several sends
+        // in one packet, and a recorder that read only the first word of
+        // each lost the rest.
+        let wordsAt = MemoryLayout<MIDIEventPacket>.offset(of: \MIDIEventPacket.words)!
+        for packet in list.unsafeSequence() {
+            let n = Int(packet.pointee.wordCount)
+            let words = UnsafeRawPointer(packet).advanced(by: wordsAt).assumingMemoryBound(to: UInt32.self)
+            var i = 0, messages = 0
+            while i < n {
+                arrivals.append((now, words[i]))
+                i += max(1, UMP.lengthInWords(words[i]))
+                messages += 1
+            }
+            if messages > 1 { sharedPackets += 1 }
         }
         if arrivals.count > 20000 { arrivals.removeFirst(arrivals.count - 20000) }
         arrivalsLock.unlock()
@@ -153,7 +166,7 @@ final class Harness: NSObject, WKScriptMessageHandlerWithReply, WKScriptMessageH
     static let safariLimit = 151, safariHold = 4.8
     static let safariRefusal = "Invalid call to runtime.sendNativeMessage(). The operation couldn\u{2019}t be completed. (SFErrorDomain error 3.)"
     var held: [Date] = []
-    var refusals = 0, peak = 0, refuseNext = 0
+    var refusals = 0, peak = 0, refuseNext = 0, sendFailures = 0
     var lastStarted = "(none)"
 
     func nextNative() {
@@ -177,6 +190,7 @@ final class Harness: NSObject, WKScriptMessageHandlerWithReply, WKScriptMessageH
         MIDIHub.shared.handle(body) { r in
             DispatchQueue.main.async {
                 if let i = self.held.firstIndex(of: .distantFuture) { self.held[i] = Date().addingTimeInterval(Harness.safariHold) }
+                if body["cmd"] as? String == "send", let failed = (r as? [String: Any])?["failed"] as? [Any] { self.sendFailures += failed.count }
                 reply(r, nil)
                 self.nativeBusy = false
                 self.nextNative()
@@ -373,8 +387,9 @@ final class Harness: NSObject, WKScriptMessageHandlerWithReply, WKScriptMessageH
             // Safari's count of native requests: refusals so far, the highest
             // count reached, and optionally refuse the next n outright.
             if let n = a["refuseNext"] as? Int { refuseNext = n }
-            if a["reset"] as? Bool == true { refusals = 0; peak = 0 }
-            reply(["refusals": refusals, "peak": peak], nil)
+            if a["reset"] as? Bool == true { refusals = 0; peak = 0; sendFailures = 0 }
+            arrivalsLock.lock(); let shared = sharedPackets; arrivalsLock.unlock()
+            reply(["refusals": refusals, "peak": peak, "sendFailures": sendFailures, "sharedPackets": shared], nil)
         case "grants":
             background.callAsyncJavaScript("if (g !== null) __store.grants = JSON.parse(g); return JSON.stringify(__store.grants || {})",
                                            arguments: ["g": (a["set"] as? String) ?? NSNull()], in: nil, in: .page) { r in
