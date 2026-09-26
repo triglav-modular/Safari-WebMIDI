@@ -79,8 +79,10 @@ Where Chrome and the spec disagree, this does what Chrome does:
 ./tools/build.sh
 ```
 
-Builds and signs `build/Web MIDI.app` with the Developer ID; `--notarize` also
-notarises and staples it. No Xcode project: the bundle is laid out by the
+Builds and signs `build/Triglav Modular.app`, which carries the Web MIDI
+extension, with the Developer ID; `--notarize` also notarises and staples it.
+The app is named for its maker because Safari's extension list takes the
+"from" name from the app's file name. No Xcode project: the bundle is laid out by the
 script. Requires macOS 13.5+ and Safari 18.4+ (the first Safari that accepts
 Developer ID-signed web extensions).
 

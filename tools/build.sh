@@ -15,7 +15,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 B="$ROOT/build"
 NAME="Web MIDI"
-APP="$B/$NAME.app"
+# The app's file name is what Safari's extension list names as the maker:
+# "Web MIDI from <this>".  (For a Developer ID app it is LaunchServices' name
+# for the app, which comes from the file, not from CFBundleDisplayName.)
+APP_FILE="Triglav Modular"
+APP="$B/$APP_FILE.app"
 APPEX="$APP/Contents/PlugIns/$NAME Extension.appex"
 APP_ID="hu.triglavmodular.webmidi"
 EXT_ID="$APP_ID.Extension"
@@ -70,6 +74,7 @@ open(out, 'w').write(s)
 EOF
 cp "$ROOT/third_party/chromium/LICENSE" "$APP/Contents/Resources/Chromium-LICENSE.txt"
 cp "$B/icons/car/Assets.car" "$B/icons/car/AppIcon.icns" "$APP/Contents/Resources/"
+cp "$B/icons/"favicon-{16,32,96}.png "$B/icons/apple-touch-icon.png" "$ROOT/site/icons/"
 
 echo "== compile"
 for arch in arm64 x86_64; do
@@ -104,11 +109,7 @@ P="$APP/Contents/Info.plist"
 set_key "$P" CFBundleIdentifier string "$APP_ID"
 set_key "$P" CFBundleExecutable string "$NAME"
 set_key "$P" CFBundleName string "$NAME"
-# Safari's extension list says "<extension> from <this>".  For an App Store
-# app it names the seller; for a Developer ID app it falls back to the
-# containing app's display name, which LaunchServices, the Dock and Finder do
-# not use (they show the bundle name), so this names the maker there alone.
-set_key "$P" CFBundleDisplayName string "Triglav Modular"
+set_key "$P" CFBundleDisplayName string "$NAME"
 set_key "$P" NSHumanReadableCopyright string "Triglav Modular"
 set_key "$P" CFBundlePackageType string APPL
 set_key "$P" CFBundleShortVersionString string "$VERSION"

@@ -37,7 +37,7 @@ func glyph(_ cg: CGContext, in rect: CGRect, white: Bool = false) {
     if white {
         // Keep the glyph's coverage, change its colour.
         cg.setBlendMode(.sourceIn)
-        cg.setFillColor(CGColor(gray: 1, alpha: 1))
+        cg.setFillColor(glyphWhite)
         cg.fill(CGRect(x: box.minX, y: box.minY, width: box.width, height: box.height))
         cg.endTransparencyLayer()
     }
@@ -54,12 +54,32 @@ func tile(_ cg: CGContext, _ s: CGFloat) {
     cg.restoreGState()
     glyph(cg, in: body.insetBy(dx: body.width * 0.19, dy: body.height * 0.19), white: true)
 }
+// The glyph's white.  Pure white on black is all grey, and Safari draws an
+// all-grey extension icon as a template: tinted flat, a blank tile in its
+// settings (measured with Safari's own safari_isGrayscale: #FFFAF0 still
+// counts as grey, #FFF5E1 does not).  This white is the least colour that
+// escapes it, and still reads as white on black.
+let glyphWhite = CGColor(srgbRed: 1, green: 245.0 / 255, blue: 225.0 / 255, alpha: 1)
 func write(_ name: String, _ data: Data) { try! data.write(to: out.appendingPathComponent(name)) }
 
 for s in [16, 19, 32, 38, 48, 64] {
     write("toolbar-\(s).png", render(s) { cg, s in glyph(cg, in: CGRect(x: 0, y: 0, width: s, height: s)) })
 }
 for s in [48, 64, 96, 128, 256, 512] { write("icon-\(s).png", render(s, tile)) }
+// The page's favicons: the black tile to the edges, no margin and no shadow,
+// so a browser tab shows no border around it.  The touch icon is square:
+// iOS rounds it itself.
+func flat(_ rounded: Bool) -> (CGContext, CGFloat) -> Void {
+    return { cg, s in
+        let r = CGRect(x: 0, y: 0, width: s, height: s)
+        if rounded { cg.addPath(CGPath(roundedRect: r, cornerWidth: s * 0.225, cornerHeight: s * 0.225, transform: nil)) }
+        else { cg.addRect(r) }
+        cg.setFillColor(CGColor(gray: 0, alpha: 1)); cg.fillPath()
+        glyph(cg, in: r.insetBy(dx: s * 0.14, dy: s * 0.14), white: true)
+    }
+}
+for s in [16, 32, 96] { write("favicon-\(s).png", render(s, flat(true))) }
+write("apple-touch-icon.png", render(180, flat(false)))
 let set = out.appendingPathComponent("AppIcon.iconset")
 try? FileManager.default.createDirectory(at: set, withIntermediateDirectories: true)
 for (s, name) in [(16, "16x16"), (32, "16x16@2x"), (32, "32x32"), (64, "32x32@2x"), (128, "128x128"),

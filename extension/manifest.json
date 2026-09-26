@@ -1,8 +1,8 @@
 {
     "manifest_version": 3,
     "name": "Web MIDI",
-    "description": "The Web MIDI API for Safari: sites can use your MIDI devices once you allow them.",
-    "version": "0.1.0",
+    "description": "The Web MIDI API for Safari.",
+    "version": "0.1.1",
     "icons": {
         "48": "icons/icon-48.png",
         "64": "icons/icon-64.png",

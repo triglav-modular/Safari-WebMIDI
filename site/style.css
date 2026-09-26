@@ -201,6 +201,8 @@ h2 {
   transition: .15s;
 }
 .button.primary { background: var(--accent); color: #171716; }
+/* The download is the page's one action: the width of its box. */
+.button.download { display: block; text-align: center; }
 .button.primary:hover { background: transparent; color: var(--accent); }
 .meta { color: var(--muted); font-size: 14px; margin: 16px 0 0; }
 .steps {
