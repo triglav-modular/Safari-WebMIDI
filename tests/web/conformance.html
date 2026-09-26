@@ -21,6 +21,25 @@ function assert(c, msg) { if (!c) throw new Error(msg || 'assertion failed'); }
 function eq(a, b, msg) { if (a !== b) throw new Error((msg ? msg + ': ' : '') + JSON.stringify(a) + ' !== ' + JSON.stringify(b)); }
 function harness(action, args) { return webkit.messageHandlers.harness.postMessage(Object.assign({ action }, args || {})); }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+// A promise that must settle within `ms`, so a step that went wrong fails
+// its own test instead of stalling the whole run until the harness gives up.
+function within(p, ms, what) {
+  return Promise.race([p, sleep(ms).then(() => { throw new Error((what || 'no answer') + ' within ' + ms + ' ms'); })]);
+}
+// A real click on the toolbar popup's button, tried again until the question
+// is gone (the badge clears when it is answered): on a slow CI runner a
+// click could land before the popup was ready, and the request then waited
+// forever (2 of 4 runs, 2026-09-26).
+async function answer(selector) {
+  for (let i = 0; i < 5; i++) {
+    await harness('decide', { selector });
+    for (let k = 0; k < 20; k++) {
+      if (await harness('badge') !== '1') return;
+      await sleep(50);
+    }
+  }
+  throw new Error('the popup did not take ' + selector);
+}
 function settled(p) { let s = 'pending'; p.then(() => { s = 'fulfilled'; }, () => { s = 'rejected'; }); return () => s; }
 async function rejects(p, name) {
   try { await p; } catch (e) { eq(e.name, name, 'error name'); return e; }
@@ -110,8 +129,8 @@ function loopOf(access) {
     eq(state1(), 'pending');
   });
   await test('Don\u2019t Allow in the popup rejects with NotAllowedError, and is remembered', async () => {
-    await harness('decide', { selector: '#askBlock' });
-    const e = await rejects(p, 'NotAllowedError');
+    await answer('#askBlock');
+    const e = await within(rejects(p, 'NotAllowedError'), 5000, 'the refusal');
     eq(e.message, 'Permission to use Web MIDI API was not granted.');
     eq(JSON.parse(await harness('grants'))[location.origin].midi, 'denied');
     eq(await harness('notice'), null, 'the notice goes');
@@ -158,8 +177,8 @@ function loopOf(access) {
   await test('Allow in the popup resolves a MIDIAccess without sysex', async () => {
     p = navigator.requestMIDIAccess();
     await harness('question');
-    await harness('decide', { selector: '#askAllow' });
-    a = await p;
+    await answer('#askAllow');
+    a = await within(p, 5000, 'the MIDIAccess');
     assert(a instanceof MIDIAccess);
     eq(a.sysexEnabled, false);
   });
@@ -171,8 +190,8 @@ function loopOf(access) {
     p = navigator.requestMIDIAccess({ sysex: true });
     const q = await harness('question');
     assert(q && /control and reprogram/.test(q) && /settings and firmware/.test(q), q);
-    await harness('decide', { selector: '#askAllow' });
-    b = await p;
+    await answer('#askAllow');
+    b = await within(p, 5000, 'the MIDIAccess');
     eq(b.sysexEnabled, true);
   });
   await test('the options dictionary: software is accepted, a non-object is refused', async () => {
