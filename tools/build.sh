@@ -15,10 +15,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 B="$ROOT/build"
 NAME="Web MIDI"
-# The app's file name is what Safari's extension list names as the maker:
-# "Web MIDI from <this>".  (For a Developer ID app it is LaunchServices' name
-# for the app, which comes from the file, not from CFBundleDisplayName.)
-APP_FILE="Triglav Modular"
+# Safari's extension list names the maker from this file name ("Web MIDI
+# from Web MIDI"): for a Developer ID app it is LaunchServices' name for the
+# app, which comes from the file, not from CFBundleDisplayName.  Naming the
+# app after the maker was tried (0.1.1) and dropped: the app is Web MIDI.
+APP_FILE="$NAME"
 APP="$B/$APP_FILE.app"
 APPEX="$APP/Contents/PlugIns/$NAME Extension.appex"
 APP_ID="hu.triglavmodular.webmidi"

@@ -66,9 +66,10 @@ for s in [16, 19, 32, 38, 48, 64] {
     write("toolbar-\(s).png", render(s) { cg, s in glyph(cg, in: CGRect(x: 0, y: 0, width: s, height: s)) })
 }
 for s in [48, 64, 96, 128, 256, 512] { write("icon-\(s).png", render(s, tile)) }
-// The page's favicons: the black tile to the edges, no margin and no shadow,
-// so a browser tab shows no border around it.  The touch icon is square:
-// iOS rounds it itself.
+// The page's favicons: black to the edges, square and fully opaque.  Safari
+// puts a light plate behind a dark favicon that has any transparency (the
+// corners of a rounded tile were enough), which reads as a white border in
+// the tab.  The touch icon is square as well: iOS rounds it itself.
 func flat(_ rounded: Bool) -> (CGContext, CGFloat) -> Void {
     return { cg, s in
         let r = CGRect(x: 0, y: 0, width: s, height: s)
@@ -78,7 +79,7 @@ func flat(_ rounded: Bool) -> (CGContext, CGFloat) -> Void {
         glyph(cg, in: r.insetBy(dx: s * 0.14, dy: s * 0.14), white: true)
     }
 }
-for s in [16, 32, 96] { write("favicon-\(s).png", render(s, flat(true))) }
+for s in [16, 32, 96] { write("favicon-\(s).png", render(s, flat(false))) }
 write("apple-touch-icon.png", render(180, flat(false)))
 let set = out.appendingPathComponent("AppIcon.iconset")
 try? FileManager.default.createDirectory(at: set, withIntermediateDirectories: true)

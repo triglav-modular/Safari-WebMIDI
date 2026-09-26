@@ -5,7 +5,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 B="$ROOT/build"
-CONTENT="$B/Triglav Modular.app/Contents/PlugIns/Web MIDI Extension.appex/Contents/Resources/content.js"
+CONTENT="$B/Web MIDI.app/Contents/PlugIns/Web MIDI Extension.appex/Contents/Resources/content.js"
 [ -f "$CONTENT" ] || { echo "Build first: ./tools/build.sh" >&2; exit 1; }
 mkdir -p "$B/obj"
 swiftc -O "$ROOT/native/MIDIMessages.swift" "$ROOT/native/MIDIHub.swift" "$ROOT/tests/webkit/main.swift" -o "$B/obj/webkit"
