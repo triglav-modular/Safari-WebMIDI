@@ -102,7 +102,9 @@ Where Chrome and the spec disagree, this does what Chrome does:
 ```
 
 Builds and signs `build/Web MIDI.app` with the Developer ID; `--notarize` also
-notarises and staples it. No Xcode project: the bundle is laid out by the
+notarises and staples it, and puts it in a notarised disk image beside a link
+to Applications (`build/Web-MIDI.dmg`, laid out by `tools/dmg.DS_Store`). No
+Xcode project: the bundle is laid out by the
 script. Requires macOS 13.5+ and Safari 18.4+ (the first Safari that accepts
 Developer ID-signed web extensions).
 
@@ -151,6 +153,6 @@ What these cannot reach is Safari's own plumbing (the extension store,
 `site/` is the download page, published to GitHub Pages by
 `.github/workflows/pages.yml`, and served at
 <https://triglavmodular.hu/mods/safari-webmidi/> by the worker in `deploy/`
-(`npx wrangler deploy`). `./tools/build.sh --notarize` puts the notarised zip
-at `site/Web-MIDI.zip`, and a commit of it publishes the new version.
+(`npx wrangler deploy`). `./tools/build.sh --notarize` puts the notarised disk
+image at `site/Web-MIDI.dmg`, and a commit of it publishes the new version.
 

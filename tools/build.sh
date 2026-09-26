@@ -1,9 +1,11 @@
 #!/bin/bash
 # Builds "Web MIDI.app" and the Safari web extension inside it, signs both
-# with the Developer ID, and with --notarize notarises and staples the app.
+# with the Developer ID, and with --notarize notarises and staples the app
+# and ships it in a notarised disk image.
 #
 #   ./tools/build.sh              build and sign   -> build/Web MIDI.app
-#   ./tools/build.sh --notarize   ...then notarise  -> build/Web-MIDI.zip
+#   ./tools/build.sh --notarize   ...then notarise  -> build/Web-MIDI.dmg
+#                                                      and site/Web-MIDI.dmg
 #
 # No Xcode project: the extension is a handful of files and two small Swift
 # programs, and a script says exactly what goes into the bundle.
@@ -124,7 +126,8 @@ echo "signed: $APP"
 [ "$NOTARIZE" = 1 ] || exit 0
 
 echo "== notarise"
-ZIP="$B/Web-MIDI.zip"
+# The zip only carries the app to the notary service; the disk image ships.
+ZIP="$B/obj/Web-MIDI.zip"
 rm -f "$ZIP"
 ditto -c -k --keepParent "$APP" "$ZIP"
 # "No Keychain password item found" is sometimes transient: ask the
@@ -142,6 +145,25 @@ printf '%s\n' "$out" | grep -q "status: Accepted" || { echo "Not accepted." >&2;
 xcrun stapler staple "$APP"
 spctl -a -vv -t exec "$APP"
 rm -f "$ZIP"
-ditto -c -k --keepParent "$APP" "$ZIP"
-cp "$ZIP" "$ROOT/site/Web-MIDI.zip"
-echo "notarised: $ZIP (and site/Web-MIDI.zip)"
+
+echo "== disk image"
+# The stapled app beside a link to /Applications, in a window laid out by
+# tools/dmg.DS_Store: 540x330, icon view, no toolbar, the app at (140,150)
+# and Applications at (400,150).  It holds no aliases, so it fits any build
+# whose two items keep those names.  It was made once with dmgbuild.
+DMG="$B/Web-MIDI.dmg"
+STAGE="$B/obj/dmg"
+rm -rf "$STAGE" "$DMG"
+mkdir -p "$STAGE"
+ditto "$APP" "$STAGE/$APP_FILE.app"
+ln -s /Applications "$STAGE/Applications"
+cp "$ROOT/tools/dmg.DS_Store" "$STAGE/.DS_Store"
+hdiutil create -volname "$NAME" -srcfolder "$STAGE" -fs HFS+ -format UDZO -ov "$DMG" >/dev/null
+codesign --force --timestamp --sign "$IDENTITY" "$DMG"
+out="$(xcrun notarytool submit "$DMG" --keychain-profile "$PROFILE" --wait 2>&1)" || true
+printf '%s\n' "$out"
+printf '%s\n' "$out" | grep -q "status: Accepted" || { echo "Disk image not accepted." >&2; exit 1; }
+xcrun stapler staple "$DMG"
+spctl -a -vv -t open --context context:primary-signature "$DMG"
+cp "$DMG" "$ROOT/site/Web-MIDI.dmg"
+echo "notarised: $DMG (and site/Web-MIDI.dmg)"
