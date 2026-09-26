@@ -16,11 +16,10 @@ in Chrome:
 
 ## Licence
 
-This project's own files are released under the Unlicense (`UNLICENSE`), as
-218e Rewired is. The files ported from Chromium (`extension/shim.js`,
-`native/MIDIMessages.swift`, and the parts of `native/MIDIHub.swift` and
-`extension/background.js` that follow Chromium) stay under Chromium's BSD
-licence, which is in `third_party/chromium/LICENSE` and ships in the app.
+This project's own work is released under the Unlicense. The files ported
+from Chromium stay under Chromium's BSD licence (`third_party/chromium/LICENSE`,
+shipped in the app), and the artwork is not dedicated. `UNLICENSE` lists what
+is which.
 
 ## How it fits together
 

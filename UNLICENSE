@@ -31,35 +31,55 @@ WHAT THIS COVERS
 A public domain dedication can only give away what the dedicator owns, so
 it is worth being exact about what that is here.
 
-COVERED — the work of this repository:
+COVERED - the work of this repository:
 
-    tools/          the build, the AVR32 encoder, the transpiler, the tests
-    src/            the Ghidra scripts, including the patch assembler
-    docs/           the documentation
-    config/         the build options
-    calibration/    measurements taken from one specific instrument
-    tunings/        Scala files written or adapted here
-    ProgramLEM218_PressureFix.command   the updater script
+    app/                        the app that carries the extension
+    extension/manifest.json     the extension's manifest
+    extension/content.js        the content script and the permission prompt
+    extension/popup.html, .js   the toolbar popup
+    native/Handler.swift        the native messaging entry point
+    tools/                      the build and test scripts, the icon generator
+    tests/                      the test harnesses, pages and fixtures, apart
+                                from what is listed below
+    deploy/, wrangler.toml      the worker that serves the download page
+    .github/                    the workflow that publishes it
+    site/index.html, style.css  the download page's text and layout
+    README.md                   the documentation
 
-NOT COVERED — the bundled flashing tools, each of which keeps its own
-licence.  dfu-programmer and SendMIDI on both platforms, Zadig on Windows,
-libusb, and the Microsoft C++ runtime.  Their presence does not place them in
-the public domain and nothing here attempts to relicense them; if you
-redistribute this tree, those files travel under their own terms.
+NOT COVERED - ported from Chromium, under Chromium's BSD licence:
 
-THIRD-PARTY.md lists every one of them with its licence, its upstream project
-and a written offer for the corresponding source.
+    extension/shim.js           the Web MIDI API in the page, ported from
+                                Blink's modules/webmidi
+    extension/background.js     its checks follow content/browser/media/
+                                midi_host.cc, and its error messages are
+                                Chromium's
+    native/MIDIMessages.swift   ported from media/midi/message_util.cc,
+                                midi_message_queue.cc and ump_message_util.cc
+    native/MIDIHub.swift        its port info and send path follow
+                                media/midi/midi_manager_mac.cc
 
-NOT PRESENT — the firmware itself:
+Copyright The Chromium Authors.  The licence is third_party/chromium/LICENSE,
+and it ships inside the app as Chromium-LICENSE.txt.  The ported files keep
+those terms, and nothing here attempts to relicense them.
 
-No firmware image is distributed from this repository.  The Buchla 218e
-firmware is not ours to give away, and the patched image is that same
-firmware with our changes spliced into it, so it is not ours to give away
-either.  Both are excluded in .gitignore.
+NOT COVERED - artwork:
 
-What is dedicated here is the recipe: the analysis, the patch sources, the
-assembler and the build.  Supply your own factory image — you already have
-it if you have the official flashing kit — and it will produce the patched
-one locally.
+    icon.ai, and the icons made from it (the app icon, the extension icons,
+    site/icons/)
+    the Triglav Modular mark in the site header (site/index.html)
+    site/images/wave_bg.png, the background of triglavmodular.hu
+
+These are not dedicated here, whatever the files beside them are.
+
+NOT PRESENT - fetched or linked, never copied into this repository:
+
+    Chromium's own media/midi sources, fetched by the differential test from
+    the pinned commit (BSD; tests/differential/fetch.sh)
+    the web-platform-tests harness and IDL files, fetched by the conformance
+    run (BSD 3-Clause; tests/wpt/fetch.sh)
+    Euclid Circular A, the site's typeface, which the download page loads
+    from triglavmodular.hu, where Triglav Modular's licence for it applies
+    Apple's frameworks (CoreMIDI, SafariServices, WebKit, AppKit), which the
+    app uses from macOS and does not contain
 
 Nothing above is legal advice.
