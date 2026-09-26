@@ -1,0 +1,12 @@
+<!doctype html>
+<meta charset="utf-8">
+<script>
+  // Asks for MIDI from inside a frame and tells the parent what happened.
+  // ?query asks the Permissions API instead of requesting access.
+  (/query/.test(location.search)
+    ? navigator.permissions.query({ name: 'midi' }).then(s => s.state, e => e.name + ': ' + e.message)
+    : navigator.requestMIDIAccess
+      ? navigator.requestMIDIAccess().then(a => a.constructor.name, e => e.name + ': ' + e.message)
+      : Promise.resolve('no requestMIDIAccess')
+  ).then(answer => parent.postMessage(answer, '*'));
+</script>

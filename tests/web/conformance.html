@@ -1,0 +1,370 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Web MIDI conformance</title>
+<script>
+  // Before anything else on the page: the API must already be there.
+  window.earlyType = typeof navigator.requestMIDIAccess;
+</script>
+<script>
+'use strict';
+// Each check is Chromium's behaviour (third_party/blink/renderer/modules/
+// webmidi and media/midi) unless it says otherwise.  Run by
+// tools/test-webkit.sh; a "WM Loop" virtual port echoes what it is sent.
+const results = [];
+async function test(name, fn) {
+  webkit.messageHandlers.progress.postMessage('start: ' + name);
+  try { await fn(); results.push([name, true]); }
+  catch (e) { results.push([name, false, (e && e.stack) ? e.message + ' @ ' + e.stack.split('\n')[0] : String(e)]); }
+  webkit.messageHandlers.progress.postMessage(JSON.stringify(results[results.length - 1]));
+}
+function assert(c, msg) { if (!c) throw new Error(msg || 'assertion failed'); }
+function eq(a, b, msg) { if (a !== b) throw new Error((msg ? msg + ': ' : '') + JSON.stringify(a) + ' !== ' + JSON.stringify(b)); }
+function harness(action, args) { return webkit.messageHandlers.harness.postMessage(Object.assign({ action }, args || {})); }
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+function settled(p) { let s = 'pending'; p.then(() => { s = 'fulfilled'; }, () => { s = 'rejected'; }); return () => s; }
+async function rejects(p, name) {
+  try { await p; } catch (e) { eq(e.name, name, 'error name'); return e; }
+  throw new Error('expected ' + name + ', but it resolved');
+}
+function throwsSync(fn, name, message) {
+  try { fn(); } catch (e) {
+    if (name) eq(e.name, name, 'error name');
+    if (message) eq(e.message, message, 'message');
+    return e;
+  }
+  throw new Error('expected ' + (name || 'an error'));
+}
+function waitFor(target, type, pred, ms) {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => { target.removeEventListener(type, on); reject(new Error('no ' + type + ' within ' + ms + ' ms')); }, ms);
+    function on(e) { if (!pred || pred(e)) { clearTimeout(t); target.removeEventListener(type, on); resolve(e); } }
+    target.addEventListener(type, on);
+  });
+}
+function loopOf(access) {
+  const out = [...access.outputs.values()].find(p => p.name === 'WM Loop');
+  const inp = [...access.inputs.values()].find(p => p.name === 'WM Loop');
+  assert(out && inp, 'the WM Loop ports');
+  return { out, inp };
+}
+
+(async function run() {
+  await test('requestMIDIAccess is defined before the page\'s first script runs', () => {
+    eq(earlyType, 'function');
+  });
+  await test('it lives on Navigator.prototype, with length 0', () => {
+    const d = Object.getOwnPropertyDescriptor(Navigator.prototype, 'requestMIDIAccess');
+    assert(d && d.enumerable && d.writable && d.configurable, 'descriptor');
+    eq(navigator.requestMIDIAccess.length, 0);
+  });
+  await test('interfaces are exposed and cannot be constructed', () => {
+    for (const n of ['MIDIAccess', 'MIDIPort', 'MIDIInput', 'MIDIOutput', 'MIDIInputMap', 'MIDIOutputMap']) {
+      eq(typeof window[n], 'function', n);
+      throwsSync(() => new window[n](), 'TypeError');
+    }
+    eq(Object.getPrototypeOf(MIDIInput), MIDIPort);
+    eq(Object.getPrototypeOf(MIDIPort.prototype), EventTarget.prototype);
+  });
+  await test('MIDIMessageEvent and MIDIConnectionEvent construct as their IDL says', () => {
+    const e = new MIDIMessageEvent('x', { data: new Uint8Array([1, 2]) });
+    eq(e.type, 'x'); eq(e.data[1], 2); eq(e.bubbles, false);
+    eq(new MIDIMessageEvent('x').data, null);
+    throwsSync(() => new MIDIMessageEvent('x', { data: [1, 2] }), 'TypeError');
+    eq(new MIDIConnectionEvent('y').port, null);
+    throwsSync(() => new MIDIConnectionEvent('y', { port: {} }), 'TypeError');
+    eq(Object.prototype.toString.call(e), '[object MIDIMessageEvent]');
+  });
+
+  // --- permission ---------------------------------------------------------------
+  await harness('grants', { set: '{}' });
+  await test('permissions.query({name: "midi"}) is "prompt" before any decision', async () => {
+    const st = await navigator.permissions.query({ name: 'midi' });
+    assert(st instanceof PermissionStatus, 'a PermissionStatus');
+    eq(st.name, 'midi'); eq(st.state, 'prompt');
+    eq((await navigator.permissions.query({ name: 'midi', sysex: true })).state, 'prompt');
+  });
+  await test('other permission names are not answered here', async () => {
+    // Whatever Safari says about them, it is not one of ours (they carry
+    // their state as an own property).
+    const r = await navigator.permissions.query({ name: 'camera' })
+      .then(st => Object.getOwnPropertyNames(st).includes('state') ? 'ours' : 'safari', e => 'safari: ' + e.name);
+    assert(r !== 'ours', r);
+  });
+  let p = navigator.requestMIDIAccess();
+  const state1 = settled(p);
+  await test('a first request shows the prompt', async () => {
+    await sleep(300);
+    const shown = await harness('prompt');
+    assert(shown, 'no prompt');
+    assert(/use your MIDI devices/.test(shown.text), shown.text);
+  });
+  await test('a click the page makes up cannot answer it', async () => {
+    await harness('untrustedClick', { selector: '.yes' });
+    await sleep(600);
+    eq(state1(), 'pending');
+  });
+  await test('Don’t Allow rejects with NotAllowedError, and is remembered', async () => {
+    await harness('click', { selector: '.no' });
+    const e = await rejects(p, 'NotAllowedError');
+    eq(e.message, 'Permission to use Web MIDI API was not granted.');
+    eq(JSON.parse(await harness('grants'))[location.origin].midi, 'denied');
+  });
+  await test('after Don\u2019t Allow the permission state is "denied"', async () => {
+    eq((await navigator.permissions.query({ name: 'midi' })).state, 'denied');
+  });
+  await test('once refused, a request is refused without asking', async () => {
+    const before = await harness('prompt');
+    await rejects(navigator.requestMIDIAccess(), 'NotAllowedError');
+    eq(await harness('prompt'), null);
+    eq(before, null);
+  });
+  await test('Escape dismisses without deciding', async () => {
+    await harness('grants', { set: '{}' });
+    const q = navigator.requestMIDIAccess();
+    await sleep(300);
+    await harness('escape');
+    await rejects(q, 'NotAllowedError');
+    eq(JSON.parse(await harness('grants'))[location.origin], undefined);
+  });
+
+  let a = null, b = null;
+  await test('Allow resolves a MIDIAccess without sysex', async () => {
+    p = navigator.requestMIDIAccess();
+    await sleep(300);
+    await harness('click', { selector: '.yes' });
+    a = await p;
+    assert(a instanceof MIDIAccess);
+    eq(a.sysexEnabled, false);
+  });
+  await test('after Allow, "midi" is granted and "midi" with sysex is still "prompt"', async () => {
+    eq((await navigator.permissions.query({ name: 'midi' })).state, 'granted');
+    eq((await navigator.permissions.query({ name: 'midi', sysex: true })).state, 'prompt');
+  });
+  await test('asking for sysex asks again, in stronger words', async () => {
+    p = navigator.requestMIDIAccess({ sysex: true });
+    await sleep(300);
+    const shown = await harness('prompt');
+    assert(shown && /control and reprogram/.test(shown.text), shown && shown.text);
+    await harness('click', { selector: '.yes' });
+    b = await p;
+    eq(b.sysexEnabled, true);
+  });
+  await test('the options dictionary: software is accepted, a non-object is refused', async () => {
+    assert((await navigator.requestMIDIAccess({ software: true, sysex: false })) instanceof MIDIAccess);
+    await rejects(navigator.requestMIDIAccess(7), 'TypeError');
+  });
+  await test('once granted, requests resolve without a prompt', async () => {
+    const c = await navigator.requestMIDIAccess();
+    eq(await harness('prompt'), null);
+    assert(c !== a, 'a new MIDIAccess each time');
+  });
+  if (!a || !b) { webkit.messageHandlers.done.postMessage(results); return; }
+
+  // --- maps and ports --------------------------------------------------------
+  await test('inputs and outputs are new maps on each read', () => {
+    assert(a.inputs !== a.inputs);
+    assert(a.inputs instanceof MIDIInputMap && a.outputs instanceof MIDIOutputMap);
+    eq(Object.prototype.toString.call(a.outputs), '[object MIDIOutputMap]');
+  });
+  await test('the maps are readonly maplike', () => {
+    const m = a.outputs;
+    eq(typeof m.set, 'undefined'); eq(typeof m.delete, 'undefined');
+    eq(m[Symbol.iterator], m.entries);
+    const keys = [...m.keys()];
+    eq(keys.length, m.size);
+    for (const [k, v] of m) { eq(v.id, k); assert(m.has(k)); eq(m.get(k), v); }
+    let n = 0; m.forEach((v, k, map) => { eq(map, m); n++; }); eq(n, m.size);
+  });
+  let loop;
+  await test('ports carry CoreMIDI’s names and signed decimal ids', () => {
+    loop = loopOf(a);
+    assert(/^-?\d+$/.test(loop.out.id), loop.out.id);
+    eq(loop.out.type, 'output'); eq(loop.inp.type, 'input');
+    eq(loop.out.state, 'connected'); eq(loop.out.connection, 'closed');
+    eq(typeof loop.out.manufacturer, 'string'); eq(typeof loop.out.version, 'string');
+  });
+  await test('open() resolves in a later task, with statechange on the port then the access', async () => {
+    const order = [];
+    const onPort = e => order.push('port:' + e.port.connection);
+    const onAccess = e => { if (e.port === loop.out) order.push('access:' + e.port.connection); };
+    loop.out.addEventListener('statechange', onPort);
+    a.addEventListener('statechange', onAccess);
+    const q = loop.out.open();
+    eq(loop.out.connection, 'closed');
+    await Promise.resolve();
+    eq(loop.out.connection, 'closed', 'still closed after a microtask');
+    eq(await q, loop.out);
+    eq(loop.out.connection, 'open');
+    eq(order.join(), 'port:open,access:open');
+    loop.out.removeEventListener('statechange', onPort);
+    a.removeEventListener('statechange', onAccess);
+    eq(await loop.out.open(), loop.out, 'open again resolves at once');
+  });
+  await test('close() closes, and open() reopens', async () => {
+    await loop.out.close();
+    eq(loop.out.connection, 'closed');
+    await loop.out.open();
+    eq(loop.out.connection, 'open');
+  });
+  await test('setting onmidimessage opens the input', async () => {
+    eq(loop.inp.connection, 'closed');
+    loop.inp.onmidimessage = () => {};
+    await waitFor(loop.inp, 'statechange', null, 1000);
+    eq(loop.inp.connection, 'open');
+    loop.inp.onmidimessage = null;
+  });
+  await test('so does addEventListener("midimessage") on another access’s input', async () => {
+    const l = loopOf(b);
+    eq(l.inp.connection, 'closed');
+    l.inp.addEventListener('midimessage', () => {});
+    await waitFor(l.inp, 'statechange', null, 1000);
+    eq(l.inp.connection, 'open');
+  });
+
+  // --- sending: Blink's MessageValidator and its messages -------------------
+  await test('send() validates as Blink does', () => {
+    const o = loop.out;
+    throwsSync(() => o.send([0x3c, 0x7f]), 'TypeError', 'Running status is not allowed at index 0 (60).');
+    throwsSync(() => o.send([0xf4]), 'TypeError', 'Reserved status is not allowed at index 0 (244).');
+    throwsSync(() => o.send([0xf7]), 'TypeError', 'Unexpected end of system exclusive message at index 0 (247).');
+    throwsSync(() => o.send([0x90, 0x3c]), 'TypeError', 'Message is incomplete.');
+    throwsSync(() => o.send([0x90, 0x3c, 0x80]), 'TypeError', 'Unexpected status byte at index 2 (128).');
+    throwsSync(() => o.send([0x90, 256, 1]), 'TypeError', 'The value at index 1 (256) is greater than 0xFF.');
+    throwsSync(() => o.send([0x90, -1, 1]), 'TypeError', 'The value at index 1 (4294967295) is greater than 0xFF.');
+    throwsSync(() => o.send([0xf0, 1, 0xf7]), 'NotAllowedError', 'System exclusive message is not allowed at index 0 (240).');
+    throwsSync(() => o.send(5), 'TypeError');
+    throwsSync(() => o.send(), 'TypeError');
+    throwsSync(() => o.send([0x90, 1, 1], Infinity), 'TypeError');
+    o.send([0xf8, 0x90, 0xf8, 0x3c, 0xfe, 0x7f]);      // real time may sit anywhere
+    o.send(new Uint8Array([0x80, 0x3c, 0]));
+    o.send([]);
+  });
+  await test('a message goes out and comes back as a midimessage event', async () => {
+    const got = waitFor(loop.inp, 'midimessage', e => e.data[0] === 0x92, 2000);
+    loop.inp.onmidimessage = () => {};
+    const t0 = performance.now();
+    loop.out.send([0x92, 60, 99]);
+    const e = await got;
+    assert(e instanceof MIDIMessageEvent);
+    eq([...e.data].join(), '146,60,99');
+    eq(e.bubbles, true); eq(e.cancelable, false);
+    assert(e.timeStamp >= t0 - 5 && e.timeStamp <= performance.now() + 5, 'timeStamp ' + e.timeStamp + ' vs ' + t0);
+  });
+  await test('messages keep their order', async () => {
+    const seen = [];
+    const done = new Promise(r => { loop.inp.onmidimessage = e => { if (e.data[0] === 0xb1) { seen.push(e.data[2]); if (seen.length === 64) r(); } }; });
+    for (let i = 0; i < 64; i++) loop.out.send([0xb1, 7, i]);
+    await Promise.race([done, sleep(3000)]);
+    eq(seen.join(), [...Array(64).keys()].join());
+  });
+  await test('a timestamp delays the send', async () => {
+    const due = performance.now() + 250;
+    const got = waitFor(loop.inp, 'midimessage', e => e.data[0] === 0x93, 2000);
+    loop.out.send([0x93, 1, 1], due);
+    const e = await got;
+    const late = performance.now() - due;
+    assert(late > -5 && late < 40, 'arrived ' + late.toFixed(1) + ' ms from due');
+    assert(Math.abs(e.timeStamp - due) < 15, 'timeStamp ' + (e.timeStamp - due).toFixed(1) + ' ms from due');
+  });
+  await test('clear() drops a send that has not gone yet', async () => {
+    let arrived = false;
+    loop.inp.onmidimessage = e => { if (e.data[0] === 0x94) arrived = true; };
+    loop.out.send([0x94, 1, 1], performance.now() + 300);
+    loop.out.clear();
+    await sleep(600);
+    eq(arrived, false);
+  });
+
+  // --- sysex ---------------------------------------------------------------------
+  await test('sysex goes out and back whole on a sysex access', async () => {
+    const l = loopOf(b);
+    const big = [0xf0, 0x7d, ...Array.from({ length: 3000 }, (_, i) => i % 128), 0xf7];
+    const got = waitFor(l.inp, 'midimessage', e => e.data[0] === 0xf0 && e.data.length === big.length, 3000);
+    l.inp.onmidimessage = () => {};
+    l.out.send(big);
+    const e = await got;
+    eq([...e.data].join(), big.join());
+  });
+  await test('an access without sysex never sees it', async () => {
+    let seen = false;
+    loop.inp.onmidimessage = e => { if (e.data[0] === 0xf0) seen = true; };
+    loopOf(b).out.send([0xf0, 1, 2, 0xf7]);
+    await sleep(400);
+    eq(seen, false);
+  });
+
+  // --- ports that come and go ---------------------------------------------------
+  let hot;
+  await test('a new port is announced on the access only', async () => {
+    const got = waitFor(a, 'statechange', e => e.port && e.port.name === 'WM Hot' && e.port.type === 'output', 4000);
+    await harness('plug', { name: 'WM Hot' });
+    const e = await got;
+    hot = e.port;
+    assert(e instanceof MIDIConnectionEvent);
+    eq(hot.state, 'connected'); eq(hot.connection, 'closed');
+    eq(a.outputs.get(hot.id), hot);
+  });
+  await test('an unplugged port turns disconnected and leaves the maps', async () => {
+    await hot.open();
+    const got = waitFor(hot, 'statechange', e => e.port.state === 'disconnected', 4000);
+    await harness('unplug', { name: 'WM Hot' });
+    await got;
+    eq(hot.connection, 'pending');
+    eq(a.outputs.has(hot.id), false);
+    hot.send([0x90, 1, 1]);                  // Chrome drops it quietly
+  });
+
+  // --- frames: the "midi" Permissions Policy, default allowlist 'self' ----------
+  let frames = 0;
+  async function frame(src, allow) {
+    // A URL of its own for each frame, so frames are told apart.
+    src += (src.includes('?') ? '&' : '?') + 'n=' + (++frames);
+    const f = document.createElement('iframe');
+    if (allow !== undefined) f.setAttribute('allow', allow);
+    const answer = new Promise(r => addEventListener('message', function on(e) {
+      if (e.source === f.contentWindow) { removeEventListener('message', on); r(e.data); }
+    }));
+    f.src = src;
+    document.body.append(f);
+    return Promise.race([answer, sleep(5000).then(() => 'no answer')]);
+  }
+  await test('a same-origin frame shares the grant', async () => {
+    eq(await frame('/frame.html'), 'MIDIAccess');
+  });
+  const other = location.protocol + '//' + location.hostname + ':' + (Number(location.port) + 1) + '/frame.html';
+  const POLICY = 'SecurityError: Midi has been disabled in this document by permissions policy.';
+  await test('a cross-origin frame without allow="midi" is refused', async () => {
+    eq(await frame(other), POLICY);
+  });
+  await test('a cross-origin frame with allow="midi" uses the top site\u2019s permission', async () => {
+    eq(await frame(other, 'midi'), 'MIDIAccess');
+    eq(await harness('prompt'), null, 'no second prompt');
+  });
+  await test('allow="midi *" lets any origin in', async () => {
+    eq(await frame(other, 'camera; midi *'), 'MIDIAccess');
+  });
+  await test('an allowlist naming another origin keeps the frame out', async () => {
+    eq(await frame(other, 'midi https://example.com'), POLICY);
+  });
+  await test('allow="midi \'none\'" refuses even a same-origin frame', async () => {
+    eq(await frame('/frame.html', "midi 'none'"), POLICY);
+  });
+  await test('a frame\u2019s permission query follows the policy', async () => {
+    eq(await frame(other + '?query'), 'denied');
+    eq(await frame(other + '?query', 'midi'), 'granted');
+  });
+
+  // --- last: taking the permission away -----------------------------------------
+  await test('a PermissionStatus fires "change" when the site is reset', async () => {
+    const st = await navigator.permissions.query({ name: 'midi' });
+    eq(st.state, 'granted');
+    const changed = waitFor(st, 'change', null, 3000);
+    await harness('forget', { origin: location.origin });
+    await changed;
+    eq(st.state, 'prompt');
+  });
+
+  webkit.messageHandlers.done.postMessage(results);
+})();
+</script>
+<body></body>
