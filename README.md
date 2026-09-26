@@ -103,9 +103,10 @@ Where Chrome and the spec disagree, this does what Chrome does:
 
 Builds and signs `build/Web MIDI.app` with the Developer ID; `--notarize` also
 notarises and staples it, and puts it in a notarised disk image beside a link
-to Applications (`build/Web-MIDI.dmg`, laid out by `tools/dmg.DS_Store`). No
-Xcode project: the bundle is laid out by the
-script. Requires macOS 13.5+ and Safari 18.4+ (the first Safari that accepts
+to Applications (`build/Web-MIDI.dmg`), on `dmg-background.png`, laid out by
+`tools/dmg-settings.py` with dmgbuild (installed from PyPI into `build/` on
+Homebrew's Python on the first run). No Xcode project: the bundle is laid
+out by the script. Requires macOS 13.5+ and Safari 18.4+ (the first Safari that accepts
 Developer ID-signed web extensions).
 
 ## Testing

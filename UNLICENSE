@@ -68,6 +68,7 @@ NOT COVERED - artwork:
     site/icons/)
     the Triglav Modular mark in the site header (site/index.html)
     site/images/wave_bg.png, the background of triglavmodular.hu
+    dmg-background.png, the disk image window's background
 
 These are not dedicated here, whatever the files beside them are.
 

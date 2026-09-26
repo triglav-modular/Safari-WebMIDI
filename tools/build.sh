@@ -147,18 +147,29 @@ spctl -a -vv -t exec "$APP"
 rm -f "$ZIP"
 
 echo "== disk image"
-# The stapled app beside a link to /Applications, in a window laid out by
-# tools/dmg.DS_Store: 540x330, icon view, no toolbar, the app at (140,150)
-# and Applications at (400,150).  It holds no aliases, so it fits any build
-# whose two items keep those names.  It was made once with dmgbuild.
+# The stapled app beside a link to /Applications, on the owner's background
+# (dmg-background.png: 1080 x 660, the 540 x 330 point window at 2x, arrow
+# included), laid out by tools/dmg-settings.py.  dmgbuild writes the
+# window's .DS_Store against the image it builds: the background is found
+# through an alias to its file on that volume, which a .DS_Store copied from
+# elsewhere cannot carry.  dmgbuild comes from PyPI into build/obj/dmgbuild,
+# on Homebrew's Python (1.6.7 needs a newer one than macOS has), on the
+# first run.
 DMG="$B/Web-MIDI.dmg"
-STAGE="$B/obj/dmg"
-rm -rf "$STAGE" "$DMG"
-mkdir -p "$STAGE"
-ditto "$APP" "$STAGE/$APP_FILE.app"
-ln -s /Applications "$STAGE/Applications"
-cp "$ROOT/tools/dmg.DS_Store" "$STAGE/.DS_Store"
-hdiutil create -volname "$NAME" -srcfolder "$STAGE" -fs HFS+ -format UDZO -ov "$DMG" >/dev/null
+DMG_W=540; DMG_H=330; ICON=112; APP_X=140; APPS_X=400
+# Centred by eye in Finder on macOS 27, with its toolbar, path bar and status
+# bar showing (about 207 of the 330 points left for the icons): an icon and
+# its name sit in the middle of that at ICON_Y, level with the arrow.
+ICON_Y=86
+VENV="$B/obj/dmgbuild"
+[ -x "$VENV/bin/dmgbuild" ] || { /opt/homebrew/bin/python3 -m venv "$VENV" && "$VENV/bin/pip" install -q "dmgbuild==1.6.7"; }
+cp "$ROOT/dmg-background.png" "$B/obj/dmg-background@2x.png"
+sips -z "$DMG_H" "$DMG_W" "$ROOT/dmg-background.png" --out "$B/obj/dmg-background.png" >/dev/null
+tiffutil -cathidpicheck "$B/obj/dmg-background.png" "$B/obj/dmg-background@2x.png" -out "$B/obj/dmg-background.tiff" >/dev/null
+rm -f "$DMG"
+"$VENV/bin/dmgbuild" -s "$ROOT/tools/dmg-settings.py" -D app="$APP" -D background="$B/obj/dmg-background.tiff" \
+    -D width="$DMG_W" -D height="$DMG_H" -D icon_size="$ICON" -D icon_y="$ICON_Y" -D app_x="$APP_X" -D apps_x="$APPS_X" \
+    "$NAME" "$DMG" >/dev/null
 codesign --force --timestamp --sign "$IDENTITY" "$DMG"
 out="$(xcrun notarytool submit "$DMG" --keychain-profile "$PROFILE" --wait 2>&1)" || true
 printf '%s\n' "$out"
