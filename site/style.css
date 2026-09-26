@@ -214,6 +214,7 @@ h2 {
   box-sizing: border-box;
   position: relative;
   overflow: hidden;
+  cursor: pointer;
   transition: background .15s, color .15s, border-color .15s,
               transform .08s, filter .45s ease-in-out;
 }
