@@ -163,7 +163,6 @@
     // --- the permission prompt (top frame only) ------------------------------
     if (window !== window.top) return;
 
-    // Draft wording: not yet approved.
     var TEXT = {
         midi: 'Allow “{site}” to use your MIDI devices?',
         sysex: 'Allow “{site}” to control and reprogram your MIDI devices?',

@@ -1,0 +1,16 @@
+# Deploy configuration for the worker in deploy/worker.js.
+#
+#     npx wrangler deploy        (from the repository root)
+#
+# Everything is written out: what is not declared here is not promised to
+# survive a deploy.
+name = "safari-webmidi-proxy"
+main = "deploy/worker.js"
+compatibility_date = "2025-01-01"
+# Served from the zone only, never from a workers.dev address as well.
+workers_dev = false
+routes = [
+  { pattern = "triglavmodular.hu/mods/safari-webmidi*", zone_name = "triglavmodular.hu" }
+]
+[observability]
+enabled = true

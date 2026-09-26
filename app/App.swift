@@ -6,7 +6,6 @@ import SafariServices
 // extension is on and to take the person to Safari's settings.
 let extensionID = "hu.triglavmodular.webmidi.Extension"
 
-// Draft wording: not yet approved.
 enum Text {
     static let title = "Web MIDI"
     static let explain = "Turn on the Web MIDI extension in Safari\u{2019}s settings. Each site then asks before it can use your MIDI devices."

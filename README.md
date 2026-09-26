@@ -14,8 +14,13 @@ in Chrome:
 | Byte streams and UMP | `media/midi/{message_util,midi_message_queue,ump_message_util}.cc` | `native/MIDIMessages.swift` |
 | CoreMIDI | `media/midi/midi_manager_mac.cc` | `native/MIDIHub.swift` |
 
-Chromium's code is BSD-licensed; its licence is in
-`third_party/chromium/LICENSE` and ships in the app.
+## Licence
+
+This project's own files are released under the Unlicense (`UNLICENSE`), as
+218e Rewired is. The files ported from Chromium (`extension/shim.js`,
+`native/MIDIMessages.swift`, and the parts of `native/MIDIHub.swift` and
+`extension/background.js` that follow Chromium) stay under Chromium's BSD
+licence, which is in `third_party/chromium/LICENSE` and ships in the app.
 
 ## How it fits together
 
@@ -108,6 +113,11 @@ Safari injects them, background in its own view, real clicks on the prompt.
 What these cannot reach is Safari's own plumbing (the extension store,
 `sendNativeMessage`); that is checked by hand in Safari.
 
-## Wording
+## Publishing
 
-The prompt, popup and app wording is a draft awaiting approval.
+`site/` is the download page, published to GitHub Pages by
+`.github/workflows/pages.yml`, and served at
+<https://triglavmodular.hu/mods/safari-webmidi/> by the worker in `deploy/`
+(`npx wrangler deploy`). `./tools/build.sh --notarize` puts the notarised zip
+at `site/Web-MIDI.zip`, and a commit of it publishes the new version.
+

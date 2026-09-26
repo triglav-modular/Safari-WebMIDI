@@ -104,7 +104,12 @@ P="$APP/Contents/Info.plist"
 set_key "$P" CFBundleIdentifier string "$APP_ID"
 set_key "$P" CFBundleExecutable string "$NAME"
 set_key "$P" CFBundleName string "$NAME"
-set_key "$P" CFBundleDisplayName string "$NAME"
+# Safari's extension list says "<extension> from <this>".  For an App Store
+# app it names the seller; for a Developer ID app it falls back to the
+# containing app's display name, which LaunchServices, the Dock and Finder do
+# not use (they show the bundle name), so this names the maker there alone.
+set_key "$P" CFBundleDisplayName string "Triglav Modular"
+set_key "$P" NSHumanReadableCopyright string "Triglav Modular"
 set_key "$P" CFBundlePackageType string APPL
 set_key "$P" CFBundleShortVersionString string "$VERSION"
 set_key "$P" CFBundleVersion string "$VERSION"
@@ -153,4 +158,5 @@ xcrun stapler staple "$APP"
 spctl -a -vv -t exec "$APP"
 rm -f "$ZIP"
 ditto -c -k --keepParent "$APP" "$ZIP"
-echo "notarised: $ZIP"
+cp "$ZIP" "$ROOT/site/Web-MIDI.zip"
+echo "notarised: $ZIP (and site/Web-MIDI.zip)"

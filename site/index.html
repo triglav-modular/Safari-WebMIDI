@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon.png">
+    <title>Web MIDI for Safari</title>
+    <!-- Served at triglavmodular.hu/mods/safari-webmidi/ by the worker in
+         deploy/, which maps that path onto this GitHub Pages site. -->
+    <link rel="canonical" href="https://triglavmodular.hu/mods/safari-webmidi/">
+    <meta name="description" content="A Safari extension that adds the Web MIDI API, so sites that talk to synths, controllers and sequencers work in Safari as they do in Chrome.">
+    <meta property="og:type" content="website">
+    <meta property="og:site_name" content="Triglav Modular">
+    <meta property="og:url" content="https://triglavmodular.hu/mods/safari-webmidi/">
+    <meta property="og:title" content="Web MIDI for Safari">
+    <meta property="og:description" content="A Safari extension that adds the Web MIDI API, so MIDI sites work in Safari as they do in Chrome.">
+    <meta property="og:image" content="https://triglavmodular.hu/mods/safari-webmidi/icons/app-icon.png">
+    <link rel="stylesheet" href="style.css">
+  </head>
+  <body>
+    <!-- The site header from triglavmodular.hu, as the 218e Rewired page
+         carries it.  Links are absolute: the page also answers on
+         triglav-modular.github.io. -->
+    <header class="sitenav">
+      <div class="sitenav-in">
+        <a class="brand" href="https://triglavmodular.hu/" aria-label="Triglav Modular">
+          <svg class="mark" viewBox="4.879 4.879 30.242 30.242" aria-hidden="true" focusable="false">
+            <path d="M9.75 30.148c0-.359 0-.718 0-1.077 0-.355-.037-.711-.073-1.064-.045-.444-.095-.887-.116-1.333-.024-.491-.013-.988 .087-1.47 .117-.565 .365-1.102 .765-1.522 .405-.425 .936-.7 1.504-.836 .484-.115 .985-.135 1.481-.117 .45 .017 .897 .065 1.345 .111 .363 .037 .727 .077 1.092 .082 .135 .002 .265-.051 .36-.146 .095-.095 .148-.225 .146-.36-.005-.361-.044-.722-.081-1.081-.046-.443-.094-.885-.112-1.33-.02-.489-.003-.984 .105-1.464 .127-.561 .388-1.09 .797-1.499 .409-.409 .938-.67 1.499-.797 .479-.108 .974-.125 1.464-.105 .445 .018 .888 .066 1.33 .112 .359 .037 .72 .076 1.081 .081 .135 .002 .265-.051 .36-.146 .095-.095 .148-.225 .146-.36-.005-.365-.044-.729-.082-1.092-.046-.447-.095-.895-.111-1.345-.018-.495 .001-.997 .117-1.481 .135-.568 .41-1.099 .836-1.504 .42-.4 .957-.648 1.522-.765 .483-.1 .98-.11 1.47-.087 .446 .021 .889 .071 1.333 .116 .353 .036 .708 .073 1.064 .073 .359 0 .718 0 1.077 0 .854 0 1.546 .692 1.546 1.546 0 .854-.692 1.546-1.546 1.546-.359 0-.718 0-1.077 0-.507 0-1.013-.051-1.517-.103-.409-.042-.819-.09-1.23-.096-.135-.002-.265 .051-.36 .146-.095 .095-.148 .225-.146 .36 .005 .361 .044 .722 .081 1.081 .046 .443 .094 .885 .112 1.33 .02 .489 .003 .984-.105 1.464-.127 .561-.388 1.09-.797 1.499s-.938 .67-1.499 .797c-.479 .108-.974 .125-1.464 .105-.445-.018-.888-.066-1.33-.112-.359-.037-.72-.076-1.081-.081-.135-.002-.265 .051-.36 .146-.095 .095-.148 .225-.146 .36 .005 .361 .044 .722 .081 1.081 .046 .443 .094 .885 .112 1.33 .02 .489 .003 .984-.105 1.464-.127 .561-.388 1.09-.797 1.499-.409 .409-.938 .67-1.499 .797-.479 .108-.974 .125-1.464 .105-.445-.018-.888-.066-1.33-.112-.359-.037-.72-.076-1.081-.081-.135-.002-.265 .051-.36 .146-.095 .095-.148 .225-.146 .36 .006 .411 .054 .821 .096 1.23 .052 .504 .103 1.01 .103 1.517 0 .359 0 .718 0 1.077 0 .854-.692 1.546-1.546 1.546-.854 0-1.546-.692-1.546-1.546Z"/>
+            <path fill-rule="evenodd" d="M11.558 11.565c-.699 .699-.699 1.833 0 2.532 .699 .699 1.833 .699 2.532 0 .699-.699 .699-1.833 0-2.532-.699-.699-1.833-.699-2.532 0ZM9.624 9.632c-1.767 1.767-1.767 4.633 0 6.4 1.767 1.767 4.633 1.767 6.4 0 1.767-1.767 1.767-4.633 0-6.4-1.767-1.767-4.633-1.767-6.4 0Z"/>
+          </svg></a>
+        <nav>
+          <a href="https://triglavmodular.hu/208-cards/">208 Cards</a>
+          <a href="https://triglavmodular.hu/the-hypjolin/">Hypjolin</a>
+          <a href="https://triglavmodular.hu/eurorack/">Eurorack</a>
+          <a href="https://triglavmodular.hu/mods/" aria-current="page">Mods</a>
+          <a href="https://triglavmodular.hu/about/">About</a>
+          <a href="https://triglav.bandcamp.com">musicK</a>
+          <a class="minor nav-icon nav-icon-cart" href="https://triglavmodular.hu/cart/"><span>Cart</span></a>
+          <a class="minor nav-icon nav-icon-account" href="https://triglavmodular.hu/my-account/"><span>Account</span></a>
+        </nav>
+      </div>
+    </header>
+
+    <div class="wrap">
+      <div class="hdr">
+        <img class="appicon" src="icons/app-icon.png" width="128" height="128" alt="">
+        <h1>Web MIDI for Safari</h1>
+      </div>
+      <p class="sub">Safari has no Web MIDI. This extension adds it, so sites that talk to synths, controllers and sequencers work in Safari as they do in Chrome.</p>
+
+      <section>
+        <a class="button primary" href="Web-MIDI.zip" download>Download for Mac</a>
+        <p class="meta">Version 0.1.0 · macOS 13.5 or later · Safari 18.4 or later · Apple silicon and Intel</p>
+      </section>
+
+      <section>
+        <h2>Install</h2>
+        <ol class="steps">
+          <li>Open the download and move Web MIDI to your Applications folder.</li>
+          <li>Open Web MIDI once, choose Open Safari Settings, and turn on Web MIDI.</li>
+          <li>On a site that uses MIDI, allow Web MIDI when Safari asks, then allow the site to use your devices.</li>
+        </ol>
+      </section>
+
+      <section>
+        <h2>Private by design</h2>
+        <p>The extension runs on your Mac and sends nothing anywhere. A site sees your MIDI devices only after you allow it. System exclusive messages, which can change a device’s settings or firmware, need a separate permission.</p>
+        <p>To review or reset what you have allowed, click the Web MIDI button in Safari’s toolbar.</p>
+      </section>
+
+      <section>
+        <h2>How it works</h2>
+        <p>Web MIDI is a port of Chromium’s implementation of the Web MIDI API, so sites behave as they do in Chrome. It talks to your devices through Core MIDI, the Mac’s own MIDI system.</p>
+        <p>Free to use. The source is on <a href="https://github.com/triglav-modular/Safari-WebMIDI">GitHub</a>.</p>
+      </section>
+    </div>
+  </body>
+</html>

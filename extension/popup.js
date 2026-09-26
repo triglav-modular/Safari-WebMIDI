@@ -1,6 +1,5 @@
 // The toolbar popup: what this site may do, and every site decided so far.
 'use strict';
-// Draft wording: not yet approved.
 var TEXT = {
     sysex: 'Can control and reprogram your MIDI devices',
     midi: 'Can use your MIDI devices',

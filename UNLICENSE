@@ -1,0 +1,65 @@
+This is free and unencumbered software released into the public domain.
+
+Anyone is free to copy, modify, publish, use, compile, sell, or
+distribute this software, either in source code form or as a compiled
+binary, for any purpose, commercial or non-commercial, and by any
+means.
+
+In jurisdictions that recognize copyright laws, the author or authors
+of this software dedicate any and all copyright interest in the
+software to the public domain. We make this dedication for the benefit
+of the public at large and to the detriment of our heirs and
+successors. We intend this dedication to be an overt act of
+relinquishment in perpetuity of all present and future rights to this
+software under copyright law.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+OTHER DEALINGS IN THE SOFTWARE.
+
+For more information, please refer to <https://unlicense.org/>
+
+
+===========================================================================
+WHAT THIS COVERS
+===========================================================================
+
+A public domain dedication can only give away what the dedicator owns, so
+it is worth being exact about what that is here.
+
+COVERED — the work of this repository:
+
+    tools/          the build, the AVR32 encoder, the transpiler, the tests
+    src/            the Ghidra scripts, including the patch assembler
+    docs/           the documentation
+    config/         the build options
+    calibration/    measurements taken from one specific instrument
+    tunings/        Scala files written or adapted here
+    ProgramLEM218_PressureFix.command   the updater script
+
+NOT COVERED — the bundled flashing tools, each of which keeps its own
+licence.  dfu-programmer and SendMIDI on both platforms, Zadig on Windows,
+libusb, and the Microsoft C++ runtime.  Their presence does not place them in
+the public domain and nothing here attempts to relicense them; if you
+redistribute this tree, those files travel under their own terms.
+
+THIRD-PARTY.md lists every one of them with its licence, its upstream project
+and a written offer for the corresponding source.
+
+NOT PRESENT — the firmware itself:
+
+No firmware image is distributed from this repository.  The Buchla 218e
+firmware is not ours to give away, and the patched image is that same
+firmware with our changes spliced into it, so it is not ours to give away
+either.  Both are excluded in .gitignore.
+
+What is dedicated here is the recipe: the analysis, the patch sources, the
+assembler and the build.  Supply your own factory image — you already have
+it if you have the official flashing kit — and it will produce the patched
+one locally.
+
+Nothing above is legal advice.
