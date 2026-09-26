@@ -1,0 +1,24 @@
+# The test suites, on every push: the port against Chromium, the CoreMIDI
+# hub, the page script in Node, and the extension end to end in WebKit with
+# the web-platform-tests IDL test.
+name: tests
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Port against Chromium
+        run: ./tools/test-differential.sh 50000
+      - name: CoreMIDI hub
+        run: ./tools/test-hub.sh
+      - name: Page script (Node)
+        run: node tests/shim/test-clear.js
+      - name: WebKit end to end
+        run: ./tools/test-webkit.sh
+      - name: web-platform-tests
+        run: ./tools/test-webkit.sh --wpt

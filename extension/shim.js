@@ -480,8 +480,17 @@
             this.queue.push([id, bytes, wall]);
             this.flush();
         },
+        // What clear() takes out of the queue was counted against
+        // MAX_UNACKED and will never be acknowledged, so it is given back;
+        // otherwise a few clears of large sysex left every later send
+        // dropped for good.
         clear: function (id) {
-            this.queue = this.queue.filter(function (q) { return q[0] !== id; });
+            var self = this;
+            this.queue = this.queue.filter(function (q) {
+                if (q[0] !== id) return true;
+                self.unacked -= q[1].length;
+                return false;
+            });
             post('clear', { port: id });
         },
         // One batch in flight at a time, so the order is the order sent.
@@ -505,12 +514,29 @@
                 return list;
             });
         },
+        // Safari delivers the extension's native requests one at a time, so a
+        // receive left open holds every send behind it: a one-second long
+        // poll put note-ons up to a second late (the 218e calibration sweep,
+        // 2026-09-26).  So a receive waits at most LISTEN_WAIT ms, and only
+        // while some input is open; otherwise a check that does not wait runs
+        // every IDLE_EVERY ms, to notice ports coming and going.
+        LISTEN_WAIT: 15,
+        IDLE_EVERY: 250,
+        listening: function () {
+            return accesses.some(function (a) {
+                return a.__inputs.some(function (p) { return p.__connection === 'open'; });
+            });
+        },
         poll: function () {
             if (this.polling) return;
             this.polling = true;
             var self = this;
-            (function next() {
-                call('recv', { since: self.cursor, gen: self.gen, wait: 1000 }).then(function (r) {
+            function later() {
+                if (self.listening()) next(); else root.setTimeout(next, self.IDLE_EVERY);
+            }
+            function next() {
+                var wait = self.listening() ? self.LISTEN_WAIT : 0;
+                call('recv', { since: self.cursor, gen: self.gen, wait: wait }).then(function (r) {
                     self.cursor = r.seq;
                     var origin = root.performance.timeOrigin;
                     (r.events || []).forEach(function (ev) {
@@ -521,10 +547,11 @@
                             });
                         });
                     });
-                    if (r.gen !== self.gen) return self.ports().then(next, next);
-                    next();
+                    if (r.gen !== self.gen) return self.ports().then(later, later);
+                    later();
                 }, function () { root.setTimeout(next, 1000); });
-            })();
+            }
+            next();
         }
     };
 
@@ -568,7 +595,13 @@
     // is answered here and anything else goes to Safari.  The status is a
     // real EventTarget with PermissionStatus.prototype, so instanceof and
     // addEventListener work; it fires "change" when the decision changes.
+    // Held weakly: a page that queries often must not keep every status it
+    // was ever given.
     var statuses = [];
+    function liveStatuses() {
+        statuses = statuses.filter(function (r) { return r.deref() !== undefined; });
+        return statuses.map(function (r) { return r.deref(); });
+    }
     function permissionStatus(sysex, state) {
         var st = new EventTarget();
         Object.setPrototypeOf(st, root.PermissionStatus.prototype);
@@ -586,11 +619,11 @@
                 enumerable: true, configurable: true
             }
         });
-        statuses.push(st);
+        statuses.push(new WeakRef(st));
         return st;
     }
     listeners.set('permissionchange', function () {
-        statuses.forEach(function (st) {
+        liveStatuses().forEach(function (st) {
             call('permission', { sysex: st.__sysex }).then(function (state) {
                 if (state !== st.__state) { st.__state = state; st.dispatchEvent(new Event('change')); }
             }, function () {});

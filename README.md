@@ -35,9 +35,18 @@ page ── shim.js (page world) ──MessageChannel── content.js (isolated
   file instead, a moment later.
 - **background.js** holds the permission decisions and is the only way to
   CoreMIDI; every request is checked there, as Chrome checks in the browser
-  process.
-- **MIDIHub** receives by long poll (it answers when a message arrives) and
-  schedules timestamped sends itself.
+  process. The question is asked in the extension's toolbar popup (with a
+  badge on the button), never in the page, which could restyle or hide
+  anything drawn in its own DOM; the page shows only a notice pointing at
+  the button, which can dismiss but not allow. As in Chrome, three
+  dismissals block a site for a week.
+- **MIDIHub** schedules timestamped sends itself, in (time, submission)
+  order, with one fixed offset between the page's clock and CoreMIDI's.
+- **Receiving.** Safari delivers the extension's native requests one at a
+  time, so a receive left waiting holds every send behind it (a one-second
+  long poll put note-ons up to a second late). A receive waits at most 15 ms,
+  and only while some input is open; otherwise a check that does not wait
+  runs every 250 ms, to notice ports coming and going.
 
 ## Where it follows the spec rather than Chrome
 
@@ -71,7 +80,14 @@ Where Chrome and the spec disagree, this does what Chrome does:
 - **`clear()` inside 20 ms.** A send due within 20 ms has already gone to
   CoreMIDI and plays. `MIDIFlushOutput` cannot help: it delivers a System
   Reset to the destination.
-- **Cross-origin frames of `about:blank` or `srcdoc`** are refused.
+- **Cross-origin frames of `about:blank` or `srcdoc`** are refused, and so
+  are frames inside a closed shadow root, whose `allow` attribute cannot be
+  read.
+- **The `Permissions-Policy` header** is not seen: an extension cannot read
+  a document's policy, so `Permissions-Policy: midi=()` is not honoured.
+  Frames are checked against their `<iframe allow>` attribute instead.
+- **Private Browsing.** Decisions made in a private window are kept in
+  memory only, and go when Safari stops the extension's background page.
 
 ## Building
 
@@ -107,7 +123,18 @@ MIDIHub against a virtual CoreMIDI loop: order, sysex up to 10 kB, timestamps,
 
 The built extension end to end in WebKit: shim and content script injected as
 Safari injects them, background in its own view, real clicks on the prompt.
-`--wpt` runs the web-platform-tests Web MIDI IDL test instead.
+`--wpt` runs the web-platform-tests Web MIDI IDL test instead. The harness
+delivers native requests one at a time, as Safari does, and needs no signed
+build: `tools/assemble-extension.sh` lays out the extension's files.
+
+```bash
+node tests/shim/test-clear.js
+```
+
+The page script in Node against a fake content script, for what the harness
+cannot stage: sends queued behind one that has not come back.
+
+`.github/workflows/tests.yml` runs all of these on every push.
 
 What these cannot reach is Safari's own plumbing (the extension store,
 `sendNativeMessage`); that is checked by hand in Safari.

@@ -2,6 +2,25 @@
 <meta charset="utf-8">
 <script>
   // Asks for MIDI from inside a frame and tells the parent what happened.
+  const params = new URLSearchParams(location.search);
+  if (params.has('nest')) {
+    // A frame inside this one, on the top page's origin, allowed by this
+    // frame's container policy or not; its answer is passed up.
+    const f = document.createElement('iframe');
+    if (params.get('nest') !== 'none') f.setAttribute('allow', params.get('nest'));
+    f.src = params.get('top') + '/frame.html?n=' + Math.random().toString(36).slice(2);
+    addEventListener('message', e => { if (e.source === f.contentWindow) parent.postMessage(e.data, '*'); });
+    document.documentElement.append(f);
+  } else if (params.has('history')) {
+    // Straight to the extension, as a page that bypasses the API would, asking
+    // for everything the hub holds.
+    navigator.requestMIDIAccess().then(() => {
+      const mc = new MessageChannel();
+      mc.port1.onmessage = e => parent.postMessage('events: ' + ((e.data.value && e.data.value.events) || []).length, '*');
+      postMessage({ __webmidi_connect: 1 }, '*', [mc.port2]);
+      mc.port1.postMessage({ id: 1, op: 'recv', args: { since: 0, wait: 0 } });
+    }, e => parent.postMessage(e.name, '*'));
+  } else
   // ?query asks the Permissions API instead of requesting access.
   (/query/.test(location.search)
     ? navigator.permissions.query({ name: 'midi' }).then(s => s.state, e => e.name + ': ' + e.message)

@@ -6,10 +6,12 @@ import Foundation
 // received messages) carries from one request to the next.
 //
 // Requests, as dictionaries from the background page:
-//   ports                                  -> { gen, inputs: [port], outputs: [port] }
-//   send   msgs: [[port, base64, t]], sysex -> { ok, failed: [port] }
-//   clear  port                            -> { ok }
-//   recv   since, gen, wait, sysex         -> { seq, gen, events: [[port, base64, t]] }
+//   ports                                          -> { gen, inputs: [port], outputs: [port] }
+//   send   msgs: [[port, base64, t]], sysex, client -> { ok, failed: [port] }
+//   clear  port, client                             -> { ok }
+//   recv   since, gen, wait, sysex                  -> { seq, gen, events: [[port, base64, t]] }
+// `client` is a page (one document); the background clamps each page's
+// `since` to where it started.
 // A port is { id, name, manufacturer, version }.  Times are milliseconds
 // since 1970 (the page's performance.timeOrigin + performance.now()), so
 // both sides share a clock without sharing a process; 0 means "now".
@@ -18,6 +20,8 @@ import Foundation
 //
 // Port info, the byte handling and the send path follow Chromium's
 // media/midi/midi_manager_mac.cc and midi_host.cc (see MIDIMessages.swift).
+// Copyright The Chromium Authors; use of that code is governed by a
+// BSD-style license that can be found in third_party/chromium/LICENSE.
 // Scheduling does not: CoreMIDI hands a timestamped event to a virtual
 // destination in another process at once and leaves the waiting to the
 // receiver, and MIDIFlushOutput sends a System Reset rather than quietly
@@ -42,11 +46,22 @@ final class MIDIHub {
     private var cachedGen = ""
     // One Chromium MidiMessageQueue per source, as midi_host.cc keeps.
     private var queues: [UInt32: MIDIMessageQueue] = [:]
-    // Sends waiting for their time, by destination id.
-    private var held: [String: [DispatchWorkItem]] = [:]
+    // Sends waiting for their time: one queue in (due, submission) order, so
+    // sends due at the same moment go out in the order they were made, and
+    // one timer that releases them.  Filed by client (a page), so one page's
+    // clear() cannot drop another's, and counted per client, so no page can
+    // make this process hold more than `maxHeldPerClient` bytes.
+    struct Held { let seq: Int; let client: String; let port: String; let words: [UInt32]; let host: UInt64; let bytes: Int }
+    private var held: [Held] = []
+    private var heldSeq = 0
+    private var heldBytes: [String: Int] = [:]
+    private var heldTotal = 0
     private let sendQueue = DispatchQueue(label: "webmidi.send", qos: .userInteractive)
+    private var timer: DispatchSourceTimer?
     static let horizon = 0.020
-    static let maxInFlight = 10 << 20
+    // Chromium's kMaxInFlightBytes, per page; and a ceiling for all of them.
+    static let maxHeldPerClient = 10 << 20
+    static let maxHeldTotal = 64 << 20
 
     static let keepEvents = 8192
     static let keepBytes = 4 << 20
@@ -78,16 +93,35 @@ final class MIDIHub {
         UInt64(max(0, n) * Double(timebase.denom) / Double(timebase.numer))
     }
     static func wallMillis() -> Double { Date().timeIntervalSince1970 * 1000 }
-    // Host time of a wall-clock instant, and back, through "now" on both.
+    // Wall clock minus host clock, in nanoseconds, read once and reused:
+    // reading both clocks for every message put equal times a few ticks
+    // apart either way, and sends given the same time came out in either
+    // order (the audit measured 52-69 of 120 pairs reversed).  Re-read at most
+    // every ten seconds, and taken up only when the clocks have drifted more
+    // than a millisecond, so equal times map to equal host times.
+    private static let offsetLock = NSLock()
+    private static var offsetNs: Double = measureOffset()
+    private static var offsetAt = Date()
+    private static func measureOffset() -> Double {
+        Date().timeIntervalSince1970 * 1e9 - hostToNanos(mach_absolute_time())
+    }
+    static func wallMinusHostNs() -> Double {
+        offsetLock.lock(); defer { offsetLock.unlock() }
+        if Date().timeIntervalSince(offsetAt) > 10 {
+            let fresh = measureOffset()
+            if abs(fresh - offsetNs) > 1e6 { offsetNs = fresh }
+            offsetAt = Date()
+        }
+        return offsetNs
+    }
+    // The host time of a wall-clock instant, whether past or future: a past
+    // time keeps its place in CoreMIDI's order instead of becoming "now".
     static func hostTime(atWallMillis ms: Double) -> UInt64 {
-        let now = mach_absolute_time(), wall = wallMillis()
-        let ahead = (ms - wall) * 1e6
-        return ahead <= 0 ? 0 : now + nanosToHost(ahead)
+        nanosToHost(ms * 1e6 - wallMinusHostNs())
     }
     static func wallMillis(atHost h: UInt64) -> Double {
-        let now = mach_absolute_time(), wall = wallMillis()
-        if h == 0 { return wall }
-        return wall - (hostToNanos(now) - hostToNanos(h)) / 1e6
+        if h == 0 { return wallMillis() }
+        return (hostToNanos(h) + wallMinusHostNs()) / 1e6
     }
 
     // --- endpoints -----------------------------------------------------------
@@ -244,35 +278,73 @@ final class MIDIHub {
         return true
     }
 
-    // Sends now, or holds the send until `horizon` before it is due and then
-    // hands it to CoreMIDI with its exact time.
-    private func schedule(_ words: [UInt32], to id: String, dest: MIDIEndpointRef, atWall ms: Double) -> Bool {
-        let ahead = ms > 0 ? (ms - MIDIHub.wallMillis()) / 1000 : 0
-        if ahead <= MIDIHub.horizon {
-            return sendWords(words, to: dest, at: ms > 0 ? MIDIHub.hostTime(atWallMillis: ms) : 0)
+    // Holds a timestamped send until `horizon` before it is due, then hands
+    // it to CoreMIDI with its exact time.  Returns false when the client is
+    // already holding its share.
+    private func hold(_ words: [UInt32], to port: String, client: String, atWall ms: Double, bytes: Int) -> Bool {
+        let host = MIDIHub.hostTime(atWallMillis: ms)
+        lock.lock()
+        let mine = heldBytes[client, default: 0]
+        guard mine + bytes <= MIDIHub.maxHeldPerClient, heldTotal + bytes <= MIDIHub.maxHeldTotal else {
+            lock.unlock(); return false
         }
-        var item: DispatchWorkItem!
-        item = DispatchWorkItem { [self] in
-            lock.lock()
-            held[id]?.removeAll { $0 === item }
-            lock.unlock()
-            if let d = destination(id) { _ = sendWords(words, to: d, at: MIDIHub.hostTime(atWallMillis: ms)) }
-        }
-        lock.lock(); held[id, default: []].append(item); lock.unlock()
-        sendQueue.asyncAfter(deadline: .now() + ahead - MIDIHub.horizon, execute: item)
+        heldSeq += 1
+        let item = Held(seq: heldSeq, client: client, port: port, words: words, host: host, bytes: bytes)
+        // Insert after everything due at or before it: (due, submission) order.
+        let at = held.firstIndex { $0.host > host } ?? held.count
+        held.insert(item, at: at)
+        heldBytes[client] = mine + bytes
+        heldTotal += bytes
+        lock.unlock()
+        release()
         return true
     }
 
-    // clear(): what is still waiting here is dropped.  What is within
-    // `horizon` of its time has gone to CoreMIDI and plays.  Not
-    // MIDIFlushOutput: it delivers a System Reset (FF) to the destination
-    // (measured on a virtual destination, 2026-09-26), which would reset the
-    // instrument rather than cancel a note.
-    private func clear(_ id: String) {
+    // Hands CoreMIDI everything within `horizon` of its time, in order, and
+    // sets the timer for the next.
+    private func release() {
+        let horizonHost = MIDIHub.nanosToHost(MIDIHub.horizon * 1e9)
         lock.lock()
-        let items = held.removeValue(forKey: id) ?? []
+        let now = mach_absolute_time()
+        var due: [Held] = []
+        while let first = held.first, first.host <= now + horizonHost {
+            due.append(held.removeFirst())
+            heldBytes[first.client, default: 0] -= first.bytes
+            if heldBytes[first.client] == 0 { heldBytes[first.client] = nil }
+            heldTotal -= first.bytes
+        }
+        let next = held.first?.host
         lock.unlock()
-        items.forEach { $0.cancel() }
+        for item in due {
+            if let d = destination(item.port) { _ = sendWords(item.words, to: d, at: item.host) }
+        }
+        sendQueue.async { [self] in
+            timer?.cancel(); timer = nil
+            guard let next = next else { return }
+            let wait = max(0, MIDIHub.hostToNanos(next) - MIDIHub.hostToNanos(mach_absolute_time())) / 1e9 - MIDIHub.horizon
+            let t = DispatchSource.makeTimerSource(queue: sendQueue)
+            t.schedule(deadline: .now() + max(0, wait), leeway: .microseconds(500))
+            t.setEventHandler { [weak self] in self?.release() }
+            t.resume()
+            timer = t
+        }
+    }
+
+    // clear(): this client's sends to this port that are still waiting here
+    // are dropped.  What is within `horizon` of its time has gone to CoreMIDI
+    // and plays.  Not MIDIFlushOutput: it delivers a System Reset (FF) to the
+    // destination (measured on a virtual destination, 2026-09-26), which would
+    // reset the instrument rather than cancel a note.
+    private func clear(_ port: String, client: String) {
+        lock.lock()
+        held.removeAll { item in
+            guard item.port == port && item.client == client else { return false }
+            heldBytes[item.client, default: 0] -= item.bytes
+            if heldBytes[item.client] == 0 { heldBytes[item.client] = nil }
+            heldTotal -= item.bytes
+            return true
+        }
+        lock.unlock()
     }
 
     // --- requests ------------------------------------------------------------
@@ -293,24 +365,30 @@ final class MIDIHub {
 
         case "send":
             // midi_host.cc's checks: sysex needs its grant, and the bytes must
-            // be whole Web MIDI messages; anything else is dropped.
+            // be whole Web MIDI messages; anything else is dropped.  Sends
+            // without a time go now, after anything already due.
             let sysexAllowed = req["sysex"] as? Bool ?? false
+            let client = req["client"] as? String ?? ""
             var failed: [String] = []
+            release()
             for m in req["msgs"] as? [[Any]] ?? [] {
                 guard m.count >= 2, let id = m[0] as? String, let b64 = m[1] as? String,
                       let data = Data(base64Encoded: b64) else { continue }
                 let bytes = [UInt8](data)
                 let at = m.count > 2 ? (m[2] as? NSNumber)?.doubleValue ?? 0 : 0
                 guard !bytes.isEmpty, sysexAllowed || !bytes.contains(MIDIBytes.sysEx),
-                      MIDIBytes.isValidWebMIDIData(bytes), let dest = destination(id),
-                      schedule(UMP.translateMidiToUmpWords(bytes), to: id, dest: dest, atWall: at) else {
+                      MIDIBytes.isValidWebMIDIData(bytes), let dest = destination(id) else {
                     failed.append(id); continue
                 }
+                let words = UMP.translateMidiToUmpWords(bytes)
+                let ok = at > 0 ? hold(words, to: id, client: client, atWall: at, bytes: bytes.count)
+                                : sendWords(words, to: dest, at: 0)
+                if !ok { failed.append(id) }
             }
             reply(["ok": failed.isEmpty, "failed": failed])
 
         case "clear":
-            if let id = req["port"] as? String { clear(id) }
+            if let id = req["port"] as? String { clear(id, client: req["client"] as? String ?? "") }
             reply(["ok": true])
 
         case "recv":

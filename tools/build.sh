@@ -45,34 +45,17 @@ if [ -z "$IDENTITY" ]; then
 fi
 [ -n "$IDENTITY" ] || { echo "No 'Developer ID Application' certificate in the keychain." >&2; exit 1; }
 
+echo "== extension"
+rm -rf "$APP"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APPEX/Contents/MacOS" "$APPEX/Contents/Resources"
+"$ROOT/tools/assemble-extension.sh" "$APPEX/Contents/Resources"
+
 echo "== icons"
-mkdir -p "$B/obj"
-swiftc -O "$ROOT/tools/make-icons.swift" -o "$B/obj/make-icons"
-rm -rf "$B/icons"
-"$B/obj/make-icons" "$ROOT/icon.ai" "$B/icons"
 mkdir -p "$B/icons/car"
 xcrun actool "$B/icons/AppIcon.icon" --compile "$B/icons/car" --platform macosx \
     --minimum-deployment-target "$MIN_MACOS" --app-icon AppIcon \
     --output-partial-info-plist "$B/icons/partial.plist" >/dev/null
 
-echo "== bundle"
-rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APPEX/Contents/MacOS" "$APPEX/Contents/Resources/icons"
-
-# The extension's files.  content.js carries shim.js and the prompt's icon
-# inline (see the placeholders in it).
-R="$APPEX/Contents/Resources"
-cp "$ROOT/extension/"{manifest.json,background.js,shim.js,popup.html,popup.js} "$R/"
-cp "$B/icons/"toolbar-{16,19,32,38}.png "$B/icons/"icon-{48,64,96,128,256,512}.png "$R/icons/"
-/usr/bin/python3 - "$ROOT/extension/content.js" "$ROOT/extension/shim.js" "$B/icons/icon-64.png" "$R/content.js" <<'EOF'
-import base64, json, sys
-content, shim, icon, out = sys.argv[1:5]
-s = open(content).read()
-s = s.replace('__SHIM_SOURCE__', json.dumps(open(shim).read()))
-s = s.replace('__ICON_DATA_URL__', json.dumps('data:image/png;base64,' + base64.b64encode(open(icon, 'rb').read()).decode()))
-assert '__SHIM_SOURCE__' not in s and '__ICON_DATA_URL__' not in s
-open(out, 'w').write(s)
-EOF
 cp "$ROOT/third_party/chromium/LICENSE" "$APP/Contents/Resources/Chromium-LICENSE.txt"
 cp "$B/icons/car/Assets.car" "$B/icons/car/AppIcon.icns" "$APP/Contents/Resources/"
 cp "$B/icons/"favicon-{16,32,96}.png "$B/icons/apple-touch-icon.png" "$ROOT/site/icons/"

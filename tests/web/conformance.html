@@ -90,48 +90,75 @@ function loopOf(access) {
       .then(st => Object.getOwnPropertyNames(st).includes('state') ? 'ours' : 'safari', e => 'safari: ' + e.name);
     assert(r !== 'ours', r);
   });
+  // The question is asked in the toolbar popup, where the page cannot reach
+  // it; the page shows only a notice pointing there, which can say no.
   let p = navigator.requestMIDIAccess();
   const state1 = settled(p);
-  await test('a first request shows the prompt', async () => {
-    await sleep(300);
-    const shown = await harness('prompt');
-    assert(shown, 'no prompt');
-    assert(/use your MIDI devices/.test(shown.text), shown.text);
+  await test('a first request asks in the toolbar popup, with a badge', async () => {
+    const q = await harness('question');
+    assert(q && /Allow \u201c.*\u201d to use your MIDI devices\?/.test(q), q);
+    eq(await harness('badge'), '1');
   });
-  await test('a click the page makes up cannot answer it', async () => {
-    await harness('untrustedClick', { selector: '.yes' });
-    await sleep(600);
+  await test('the page shows a notice pointing there, with no Allow', async () => {
+    const n = await harness('notice');
+    assert(n && /Answer with the Web MIDI button/.test(n.text), n && n.text);
+    eq(n.buttons.join(), 'Not now');
+  });
+  await test('no click in the page can answer yes', async () => {
+    await harness('untrustedClick');
+    await sleep(400);
     eq(state1(), 'pending');
   });
-  await test('Don’t Allow rejects with NotAllowedError, and is remembered', async () => {
-    await harness('click', { selector: '.no' });
+  await test('Don\u2019t Allow in the popup rejects with NotAllowedError, and is remembered', async () => {
+    await harness('decide', { selector: '#askBlock' });
     const e = await rejects(p, 'NotAllowedError');
     eq(e.message, 'Permission to use Web MIDI API was not granted.');
     eq(JSON.parse(await harness('grants'))[location.origin].midi, 'denied');
+    eq(await harness('notice'), null, 'the notice goes');
+    eq(await harness('badge'), '', 'the badge goes');
   });
   await test('after Don\u2019t Allow the permission state is "denied"', async () => {
     eq((await navigator.permissions.query({ name: 'midi' })).state, 'denied');
   });
   await test('once refused, a request is refused without asking', async () => {
-    const before = await harness('prompt');
     await rejects(navigator.requestMIDIAccess(), 'NotAllowedError');
-    eq(await harness('prompt'), null);
-    eq(before, null);
+    eq(await harness('notice'), null);
+    eq(await harness('question', { expect: false }), null);
   });
-  await test('Escape dismisses without deciding', async () => {
+  await test('the notice\u2019s Not now dismisses without deciding', async () => {
     await harness('grants', { set: '{}' });
+    const q = navigator.requestMIDIAccess();
+    await sleep(300);
+    await harness('noticeClick');
+    await rejects(q, 'NotAllowedError');
+    const o = JSON.parse(await harness('grants'))[location.origin];
+    eq(o.midi, undefined); eq(o.dismissed, 1);
+  });
+  await test('Escape dismisses too', async () => {
     const q = navigator.requestMIDIAccess();
     await sleep(300);
     await harness('escape');
     await rejects(q, 'NotAllowedError');
-    eq(JSON.parse(await harness('grants'))[location.origin], undefined);
+    eq(JSON.parse(await harness('grants'))[location.origin].dismissed, 2);
+  });
+  await test('three dismissals block the site for a week, as Chrome does', async () => {
+    const q = navigator.requestMIDIAccess();
+    await sleep(300);
+    await harness('noticeClick');
+    await rejects(q, 'NotAllowedError');
+    const o = JSON.parse(await harness('grants'))[location.origin];
+    assert(o.embargo > Date.now() + 6 * 24 * 3600 * 1000, 'embargo ' + o.embargo);
+    await rejects(navigator.requestMIDIAccess(), 'NotAllowedError');
+    eq(await harness('notice'), null, 'not asked while blocked');
+    eq((await navigator.permissions.query({ name: 'midi' })).state, 'denied');
+    await harness('grants', { set: '{}' });
   });
 
   let a = null, b = null;
-  await test('Allow resolves a MIDIAccess without sysex', async () => {
+  await test('Allow in the popup resolves a MIDIAccess without sysex', async () => {
     p = navigator.requestMIDIAccess();
-    await sleep(300);
-    await harness('click', { selector: '.yes' });
+    await harness('question');
+    await harness('decide', { selector: '#askAllow' });
     a = await p;
     assert(a instanceof MIDIAccess);
     eq(a.sysexEnabled, false);
@@ -142,10 +169,9 @@ function loopOf(access) {
   });
   await test('asking for sysex asks again, in stronger words', async () => {
     p = navigator.requestMIDIAccess({ sysex: true });
-    await sleep(300);
-    const shown = await harness('prompt');
-    assert(shown && /control and reprogram/.test(shown.text), shown && shown.text);
-    await harness('click', { selector: '.yes' });
+    const q = await harness('question');
+    assert(q && /control and reprogram/.test(q) && /settings and firmware/.test(q), q);
+    await harness('decide', { selector: '#askAllow' });
     b = await p;
     eq(b.sysexEnabled, true);
   });
@@ -153,9 +179,9 @@ function loopOf(access) {
     assert((await navigator.requestMIDIAccess({ software: true, sysex: false })) instanceof MIDIAccess);
     await rejects(navigator.requestMIDIAccess(7), 'TypeError');
   });
-  await test('once granted, requests resolve without a prompt', async () => {
+  await test('once granted, requests resolve without asking', async () => {
     const c = await navigator.requestMIDIAccess();
-    eq(await harness('prompt'), null);
+    eq(await harness('notice'), null);
     assert(c !== a, 'a new MIDIAccess each time');
   });
   if (!a || !b) { webkit.messageHandlers.done.postMessage(results); return; }
@@ -257,6 +283,30 @@ function loopOf(access) {
     await Promise.race([done, sleep(3000)]);
     eq(seen.join(), [...Array(64).keys()].join());
   });
+  // The 218e calibration sweep's pattern: note-off, 60 ms, note-on, then a
+  // second of listening.  Safari runs one native request at a time, so a
+  // receive left open would hold the note-on back by up to a second.
+  async function sweepLatencies(listen) {
+    const arrived = new Map();
+    loop.inp.onmidimessage = listen ? (e => { if (e.data[0] === 0x95) arrived.set(e.data[1], performance.now()); }) : null;
+    if (!listen) loop.inp.addEventListener('midimessage', e => { if (e.data[0] === 0x95) arrived.set(e.data[1], performance.now()); });
+    const sent = new Map(), late = [];
+    for (let i = 0; i < 12; i++) {
+      loop.out.send([0x85, 40 + i, 0]);
+      await sleep(60);
+      sent.set(50 + i, performance.now());
+      loop.out.send([0x95, 50 + i, 100]);
+      await sleep(250 + Math.random() * 700);
+    }
+    await sleep(300);
+    for (const [note, t] of sent) late.push(arrived.has(note) ? arrived.get(note) - t : Infinity);
+    return late;
+  }
+  await test('a note-on is not held behind an open receive (the sweep\u2019s off, 60 ms, on)', async () => {
+    const late = await sweepLatencies(true);
+    const worst = Math.max(...late);
+    assert(worst < 60, 'worst ' + worst.toFixed(0) + ' ms; all ' + late.map(x => x.toFixed(0)).join(' '));
+  });
   await test('a timestamp delays the send', async () => {
     const due = performance.now() + 250;
     const got = waitFor(loop.inp, 'midimessage', e => e.data[0] === 0x93, 2000);
@@ -338,7 +388,7 @@ function loopOf(access) {
   });
   await test('a cross-origin frame with allow="midi" uses the top site\u2019s permission', async () => {
     eq(await frame(other, 'midi'), 'MIDIAccess');
-    eq(await harness('prompt'), null, 'no second prompt');
+    eq(await harness('notice'), null, 'not asked again');
   });
   await test('allow="midi *" lets any origin in', async () => {
     eq(await frame(other, 'camera; midi *'), 'MIDIAccess');
@@ -352,6 +402,22 @@ function loopOf(access) {
   await test('a frame\u2019s permission query follows the policy', async () => {
     eq(await frame(other + '?query'), 'denied');
     eq(await frame(other + '?query', 'midi'), 'granted');
+  });
+
+  await test('frames within frames: each container\u2019s allow must let the next in', async () => {
+    const top = encodeURIComponent(location.origin);
+    eq(await frame(other + '?nest=midi&top=' + top, 'midi'), 'MIDIAccess');
+    eq(await frame(other + '?nest=none&top=' + top, 'midi'), POLICY);
+  });
+
+  // --- input a page never saw ------------------------------------------------------
+  await test('a new page reads no input from before it started', async () => {
+    // Traffic from this page first, so the hub has something to give away.
+    loop.inp.onmidimessage = () => {};
+    for (let i = 0; i < 8; i++) loop.out.send([0x96, i, 1]);
+    await sleep(300);
+    // A same-origin frame asks the extension directly, from the start.
+    eq(await frame('/frame.html?history'), 'events: 0');
   });
 
   // --- last: taking the permission away -----------------------------------------

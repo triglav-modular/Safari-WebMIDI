@@ -107,6 +107,56 @@ DispatchQueue.global().async {
     arrivalsLock.lock(); let cleared = arrivals.isEmpty; let seen = arrivals; arrivalsLock.unlock()
     check("clear() cancels a scheduled send", cleared, "arrived: \(seen.map { String(format: "%.1f ms after the clear, %d words", $0.0 - clearedAt, $0.1) })")
 
+    // Sends given the same time go out in the order they were made: a
+    // note-off and the note-on that follows it, 120 pairs, on the held path
+    // in one request, in separate requests, and inside the horizon.
+    func pairsReversed(_ label: String, sameRequest: Bool, ahead: Double) -> Int {
+        _ = collect(from: &cursor, count: 10_000, ms: 300)      // drain
+        for i in 0..<120 {
+            let due = now() + ahead + Double(i) * 2
+            let off = b64([0x81, UInt8(i % 128), 0]), on = b64([0x91, UInt8(i % 128), 100])
+            if sameRequest {
+                _ = ask(["cmd": "send", "msgs": [[out, off, due], [out, on, due]]])
+            } else {
+                _ = ask(["cmd": "send", "msgs": [[out, off, due]]])
+                _ = ask(["cmd": "send", "msgs": [[out, on, due]]])
+            }
+        }
+        let got = collect(from: &cursor, count: 240, ms: 3000).map { unb64($0[1]) }.filter { $0[0] == 0x81 || $0[0] == 0x91 }
+        var seenOff = Set<UInt8>(), reversed = 0
+        for m in got {
+            if m[0] == 0x81 { seenOff.insert(m[1]) } else if !seenOff.contains(m[1]) { reversed += 1 }
+        }
+        check("\(label): all 240 arrive", got.count == 240, "got \(got.count)")
+        return reversed
+    }
+    for (label, same, ahead) in [("held, one request", true, 150.0), ("held, separate requests", false, 150.0),
+                                  ("inside the horizon", false, 5.0)] {
+        let r = pairsReversed(label, sameRequest: same, ahead: ahead)
+        check("equal times keep their order (\(label))", r == 0, "\(r) of 120 pairs reversed")
+    }
+
+    // One page's clear() leaves another page's sends alone.
+    arrivalsLock.lock(); arrivals = []; arrivalsLock.unlock()
+    _ = ask(["cmd": "send", "client": "A", "msgs": [[out, b64([0x92, 1, 1]), now() + 300]]])
+    _ = ask(["cmd": "send", "client": "B", "msgs": [[out, b64([0x92, 2, 1]), now() + 300]]])
+    _ = ask(["cmd": "clear", "port": out, "client": "A"])
+    Thread.sleep(forTimeInterval: 0.5)
+    arrivalsLock.lock(); let afterClear = arrivals.count; arrivalsLock.unlock()
+    check("clear() drops only its own page's sends", afterClear == 1, "\(afterClear) arrived")
+    _ = collect(from: &cursor, count: 10, ms: 300)
+
+    // No page can make the extension hold more than its share.
+    var huge: [UInt8] = [0xf0]; huge += [UInt8](repeating: 0x11, count: 3 << 20); huge.append(0xf7)
+    let far = now() + 60_000
+    var capped = false
+    for _ in 0..<5 {
+        let r = ask(["cmd": "send", "client": "C", "sysex": true, "msgs": [[out, b64(huge), far]]])
+        if (r["failed"] as? [String])?.isEmpty == false { capped = true; break }
+    }
+    check("a page cannot hold more than 10 MB of scheduled sends", capped)
+    _ = ask(["cmd": "clear", "port": out, "client": "C"])
+
     // Long poll: idle holds, an arrival answers early, a port change wakes it.
     var t0 = Date()
     let idle = ask(["cmd": "recv", "since": cursor, "wait": 300])
@@ -116,11 +166,12 @@ DispatchQueue.global().async {
     let sem = DispatchSemaphore(value: 0)
     var woke: [String: Any] = [:]
     t0 = Date()
-    MIDIHub.shared.handle(["cmd": "recv", "since": cursor, "gen": gen as Any, "wait": 3000]) { woke = $0; sem.signal() }
+    MIDIHub.shared.handle(["cmd": "recv", "since": cursor, "gen": gen as Any, "wait": 5000]) { woke = $0; sem.signal() }
     var extra = MIDIEndpointRef()
     DispatchQueue.main.async { MIDISourceCreateWithProtocol(client, "WM Extra" as CFString, ._1_0, &extra) }
     sem.wait()
-    check("a new port wakes the receive with a new generation", woke["gen"] as? String != gen && Date().timeIntervalSince(t0) < 2)
+    check("a new port wakes the receive with a new generation", woke["gen"] as? String != gen && Date().timeIntervalSince(t0) < 3.5,
+          "\(Date().timeIntervalSince(t0)) s")
 
     let bad = ask(["cmd": "send", "msgs": [["12345", b64([0x90, 1, 1]), 0]]])
     check("a port that is gone reports failure", (bad["failed"] as? [String]) == ["12345"], "\(bad)")

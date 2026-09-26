@@ -21,9 +21,18 @@
   button { font: inherit; border: 0; border-radius: 999px; padding: 3px 12px; background: var(--btn); color: var(--fg); cursor: pointer;
            box-shadow: inset 0 1px 0 rgba(255,255,255,.5), inset 0 0 0 .5px rgba(0,0,0,.1); }
   .empty { color: var(--muted); margin: 0; }
+  .detail { color: var(--muted); margin: 4px 0 0; }
+  .buttons { justify-content: flex-end; margin-top: 12px; }
+  button.primary { background: #000; color: #fff; }
+  @media (prefers-color-scheme: dark) { button.primary { background: #fff; color: #000; } }
 </style>
 </head>
 <body>
+  <section id="ask" hidden>
+    <h1 id="askQuestion"></h1>
+    <p id="askDetail" class="detail" hidden></p>
+    <div class="row buttons"><button id="askBlock"></button><button id="askAllow" class="primary"></button></div>
+  </section>
   <section id="here" hidden>
     <h1 id="hereSite"></h1>
     <div class="row"><span id="hereState" class="state"></span><button id="hereForget" hidden></button></div>

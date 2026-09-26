@@ -78,7 +78,14 @@
     }
     browser.runtime.onMessage.addListener(function (msg) {
         if (!msg || msg.type !== 'policy') return undefined;
-        var frame = Array.prototype.find.call(document.querySelectorAll('iframe, frame'), function (f) {
+        // Frames in open shadow roots too; a closed root cannot be searched,
+        // and a frame in one is refused.
+        var frames = [];
+        (function collect(root) {
+            Array.prototype.push.apply(frames, root.querySelectorAll('iframe, frame'));
+            root.querySelectorAll('*').forEach(function (el) { if (el.shadowRoot) collect(el.shadowRoot); });
+        })(document);
+        var frame = frames.find(function (f) {
             try { return browser.runtime.getFrameId(f) === msg.frameId; } catch (e) { return false; }
         });
         if (!frame) return undefined;          // not ours: the frame that holds it answers
@@ -89,8 +96,11 @@
     });
 
     function ask(msg) { return browser.runtime.sendMessage(msg); }
+    // This document's id: its scheduled sends and its place in the input
+    // are its own (background.js).
+    var DOC = Math.random().toString(36).slice(2) + Date.now().toString(36);
     function native(req) {
-        return ask({ type: 'native', req: req }).then(function (r) {
+        return ask({ type: 'native', req: req, doc: DOC }).then(function (r) {
             if (!r || r.error) throw r && r.error ? r.error : { name: 'AbortError', message: 'The MIDI system failed to start.' };
             return r.value;
         });
@@ -113,6 +123,8 @@
 
     function serve(port) {
         ports.push(port);
+        // A page can open channels at will; the notices go to the latest few.
+        if (ports.length > 16) ports.shift();
         function answer(id, ok, value, transfer) {
             if (id === undefined) return;
             try { port.postMessage(ok ? { id: id, ok: true, value: value } : { id: id, ok: false, error: value }, transfer || []); }
@@ -160,20 +172,23 @@
         };
     }
 
-    // --- the permission prompt (top frame only) ------------------------------
+    // --- the notice (top frame only) --------------------------------------------
+    // The question itself is asked in the extension's toolbar popup, where a
+    // page cannot reach it (background.js).  The page gets only this notice,
+    // pointing at the button: it has no Allow, and closing it counts as
+    // dismissing the question.
     if (window !== window.top) return;
 
     var TEXT = {
-        midi: 'Allow “{site}” to use your MIDI devices?',
-        sysex: 'Allow “{site}” to control and reprogram your MIDI devices?',
-        sysexDetail: 'This lets the site change your devices’ settings and firmware.',
-        allow: 'Allow',
-        block: 'Don’t Allow',
+        midi: '\u201c{site}\u201d is asking to use your MIDI devices.',
+        sysex: '\u201c{site}\u201d is asking to control and reprogram your MIDI devices.',
+        where: 'Answer with the Web MIDI button in Safari\u2019s toolbar.',
+        close: 'Not now',
         from: 'Web MIDI'
     };
     var ICON = __ICON_DATA_URL__;
     // Safari's Liquid Glass, as near as a page can draw it: a translucent,
-    // blurred and saturated panel with a lit edge, and capsule buttons.
+    // blurred and saturated panel with a lit edge, and a capsule button.
     var CSS = [
         ':host{all:initial}',
         '.wrap{position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:2147483647;',
@@ -187,73 +202,60 @@
         '.from{font-size:11px;font-weight:600;color:rgba(60,60,67,.7);margin:0 0 2px}',
         '.q{font-weight:600;font-size:14px;margin:0;overflow-wrap:anywhere}',
         '.d{margin:4px 0 0;color:rgba(60,60,67,.85)}',
-        '.b{display:flex;gap:8px;justify-content:flex-end;margin-top:14px;grid-column:2}',
+        '.b{display:flex;justify-content:flex-end;margin-top:12px;grid-column:2}',
         'button{font:inherit;font-weight:500;padding:6px 16px;border-radius:999px;border:0;cursor:pointer;',
-        'transition:transform .12s ease,opacity .2s}',
-        'button:active{transform:scale(.97)}button:disabled{opacity:.45;cursor:default}',
-        '.no{color:#1d1d1f;background:rgba(255,255,255,.55);',
-        'box-shadow:inset 0 1px 0 rgba(255,255,255,.9),inset 0 0 0 .5px rgba(0,0,0,.12)}',
-        '.yes{color:#fff;background:#000;box-shadow:inset 0 1px 0 rgba(255,255,255,.28),0 1px 3px rgba(0,0,0,.25)}',
+        'color:#1d1d1f;background:rgba(255,255,255,.55);box-shadow:inset 0 1px 0 rgba(255,255,255,.9),inset 0 0 0 .5px rgba(0,0,0,.12)}',
+        'button:active{transform:scale(.97)}',
         '@media (prefers-color-scheme:dark){.wrap{color:#f5f5f7;background:rgba(40,40,44,.55);border-color:rgba(255,255,255,.18);',
         'box-shadow:inset 0 1px 0 rgba(255,255,255,.22),0 12px 40px rgba(0,0,0,.5)}',
         '.from{color:rgba(235,235,245,.6)}.d{color:rgba(235,235,245,.8)}',
-        '.no{color:#f5f5f7;background:rgba(255,255,255,.12);box-shadow:inset 0 1px 0 rgba(255,255,255,.2),inset 0 0 0 .5px rgba(255,255,255,.12)}',
-        '.yes{color:#000;background:#fff}}'
+        'button{color:#f5f5f7;background:rgba(255,255,255,.12);box-shadow:inset 0 1px 0 rgba(255,255,255,.2),inset 0 0 0 .5px rgba(255,255,255,.12)}}'
     ].join('');
 
-    var showing = null;
-    function prompt(site, sysex) {
-        if (showing) return showing;
-        showing = new Promise(function (resolve) {
-            var host = document.createElement('webmidi-prompt');
-            host.setAttribute('style', 'all:initial !important;display:block !important;position:fixed !important;' +
-                'inset:0 auto auto 0 !important;z-index:2147483647 !important;opacity:1 !important;visibility:visible !important');
-            var shadow = host.attachShadow({ mode: 'closed' });
-            var style = document.createElement('style');
-            style.textContent = CSS;
-            var box = document.createElement('div');
-            box.className = 'wrap';
-            box.setAttribute('role', 'alertdialog');
-            var img = document.createElement('img'); img.className = 'icon'; img.src = ICON; img.alt = '';
-            var from = document.createElement('p'); from.className = 'from'; from.textContent = TEXT.from;
-            var q = document.createElement('p'); q.className = 'q';
-            q.textContent = (sysex ? TEXT.sysex : TEXT.midi).replace('{site}', site);
-            box.append(img, from, q);
-            if (sysex) { var d = document.createElement('p'); d.className = 'd'; d.textContent = TEXT.sysexDetail; box.append(d); }
-            var bar = document.createElement('div'); bar.className = 'b';
-            var no = document.createElement('button'); no.className = 'no'; no.textContent = TEXT.block;
-            var yes = document.createElement('button'); yes.className = 'yes'; yes.textContent = TEXT.allow;
-            bar.append(no, yes); box.append(bar);
-            shadow.append(style, box);
-            // Buttons wake after a moment, so a click aimed at the page as the
-            // prompt appears cannot land on Allow.
-            no.disabled = yes.disabled = true;
-            setTimeout(function () { no.disabled = yes.disabled = false; }, 500);
-
-            var watcher = new MutationObserver(function () {
-                if (!host.isConnected) document.documentElement.appendChild(host);
-            });
-            function finish(answer) {
-                watcher.disconnect();
-                document.removeEventListener('keydown', onKey, true);
-                host.remove();
-                showing = null;
-                resolve(answer);
-            }
-            // Only a real click decides: a page can dispatch clicks, but they
-            // are not trusted.
-            no.addEventListener('click', function (e) { if (e.isTrusted && !no.disabled) finish('block'); });
-            yes.addEventListener('click', function (e) { if (e.isTrusted && !yes.disabled) finish('allow'); });
-            function onKey(e) { if (e.isTrusted && e.key === 'Escape') finish('dismiss'); }
-            document.addEventListener('keydown', onKey, true);
-            (document.body || document.documentElement).appendChild(host);
-            watcher.observe(document.documentElement, { childList: true, subtree: true });
-        });
-        return showing;
+    var notice = null;
+    function hideNotice() {
+        if (!notice) return;
+        document.removeEventListener('keydown', notice.onKey, true);
+        notice.host.remove();
+        notice = null;
+    }
+    function showNotice(site, sysex) {
+        hideNotice();
+        var host = document.createElement('webmidi-notice');
+        host.setAttribute('style', 'all:initial !important;display:block !important;position:fixed !important;' +
+            'inset:0 auto auto 0 !important;z-index:2147483647 !important');
+        var shadow = host.attachShadow({ mode: 'closed' });
+        var style = document.createElement('style');
+        style.textContent = CSS;
+        var box = document.createElement('div');
+        box.className = 'wrap';
+        box.setAttribute('role', 'status');
+        var img = document.createElement('img'); img.className = 'icon'; img.src = ICON; img.alt = '';
+        var from = document.createElement('p'); from.className = 'from'; from.textContent = TEXT.from;
+        var q = document.createElement('p'); q.className = 'q';
+        q.textContent = (sysex ? TEXT.sysex : TEXT.midi).replace('{site}', site);
+        var d = document.createElement('p'); d.className = 'd'; d.textContent = TEXT.where;
+        var bar = document.createElement('div'); bar.className = 'b';
+        var close = document.createElement('button'); close.textContent = TEXT.close;
+        bar.append(close);
+        box.append(img, from, q, d, bar);
+        shadow.append(style, box);
+        function dismiss(e) {
+            if (!e.isTrusted) return;
+            hideNotice();
+            browser.runtime.sendMessage({ type: 'notice-dismissed' }).catch(function () {});
+        }
+        close.addEventListener('click', dismiss);
+        var onKey = function (e) { if (e.key === 'Escape') dismiss(e); };
+        document.addEventListener('keydown', onKey, true);
+        (document.body || document.documentElement).appendChild(host);
+        notice = { host: host, onKey: onKey };
     }
 
     browser.runtime.onMessage.addListener(function (msg) {
-        if (msg && msg.type === 'prompt') return prompt(msg.site, !!msg.sysex);
+        if (msg && msg.type === 'notice') {
+            if (msg.show) showNotice(msg.site, !!msg.sysex); else hideNotice();
+        }
         return undefined;
     });
 })();

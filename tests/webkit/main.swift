@@ -20,6 +20,7 @@ let contentJS = try! String(contentsOfFile: args[1], encoding: .utf8)
 let backgroundJS = try! String(contentsOfFile: args[2], encoding: .utf8)
 let pageURL = URL(string: args[3])!
 let seedGrants = args.count > 4 ? args[4] : "{}"
+let extDir = args.count > 5 ? args[5] : ""
 func log(_ s: String) { print(s); fflush(stdout) }
 // FNV-1a, as __hash in the content stub.
 func frameHash(_ s: String) -> Int {
@@ -63,10 +64,19 @@ var browser = {
     set: function (o) { Object.keys(o).forEach(function (k) { __store[k] = JSON.parse(JSON.stringify(o[k])); }); return Promise.resolve(); }
   } },
   tabs: {
-    sendMessage: function (tab, msg, opts) { return window.webkit.messageHandlers.toTab.postMessage(msg); },
-    query: function () { return Promise.resolve([{ id: 1 }]); }
+    sendMessage: function (tab, msg, opts) {
+      return window.webkit.messageHandlers.toTab.postMessage({ msg: msg, frameId: opts && opts.frameId !== undefined ? opts.frameId : null });
+    },
+    query: function () { return Promise.resolve([{ id: 1 }]); },
+    onRemoved: { addListener: function () {} }
+  },
+  action: {
+    openPopup: function () { return window.webkit.messageHandlers.openPopup.postMessage({}); },
+    setBadgeText: function (o) { __badge = o.text; },
+    setBadgeBackgroundColor: function () {}
   }
 };
+var __badge = '';
 async function __deliver(msg, sender) {
   for (const fn of __listeners) { const r = fn(msg, sender); if (r !== undefined) return await r; }
   return null;
@@ -92,10 +102,22 @@ var browser = { runtime: {
   getURL: function (p) { return 'webmidi-ext://ext/' + p; },
   onMessage: { addListener: function (fn) { __listeners.push(fn); } }
 } };
+// Every frame says where it is as it loads, so a message for the whole tab
+// reaches frames that have not spoken to the extension yet, as Safari's does.
+window.webkit.messageHandlers.frameHello.postMessage(location.href);
 async function __toContent(msg) {
   for (const fn of __listeners) { const r = fn(msg, {}); if (r !== undefined) return await r; }
   return null;
 }
+"""
+
+// The toolbar popup, an extension page: its messages reach the background
+// with the extension's own URL as the sender.
+let popupStub = """
+var browser = {
+  runtime: { sendMessage: function (m) { return window.webkit.messageHandlers.popupToBg.postMessage(m); } },
+  tabs: { query: function () { return window.webkit.messageHandlers.popupTabs.postMessage({}); } }
+};
 """
 
 final class Harness: NSObject, WKScriptMessageHandlerWithReply, WKScriptMessageHandler, WKNavigationDelegate {
@@ -103,6 +125,28 @@ final class Harness: NSObject, WKScriptMessageHandlerWithReply, WKScriptMessageH
     var background: WKWebView!
     var window: NSWindow!
     var backgroundReady = false
+    var popup: WKWebView!
+    var popupWindow: NSWindow!
+    // Frames that have spoken, so a message for the whole tab reaches them all.
+    var frames: [Int: WKFrameInfo] = [:]
+    var nativeQueue: [([String: Any], (Any?, String?) -> Void)] = []
+    var nativeBusy = false
+
+    func nextNative() {
+        guard !nativeBusy, !nativeQueue.isEmpty else { return }
+        nativeBusy = true
+        let (body, reply) = nativeQueue.removeFirst()
+        if verbose && ProcessInfo.processInfo.environment["WEBMIDI_TRACE"] != nil {
+            log(String(format: "  native %.3f %@ queued=%d", Date().timeIntervalSince1970.truncatingRemainder(dividingBy: 100), body["cmd"] as? String ?? "?", nativeQueue.count))
+        }
+        MIDIHub.shared.handle(body) { r in
+            DispatchQueue.main.async {
+                reply(r, nil)
+                self.nativeBusy = false
+                self.nextNative()
+            }
+        }
+    }
 
     func start() {
         let bcfg = WKWebViewConfiguration()
@@ -110,6 +154,14 @@ final class Harness: NSObject, WKScriptMessageHandlerWithReply, WKScriptMessageH
                                                               injectionTime: .atDocumentStart, forMainFrameOnly: true))
         bcfg.userContentController.addScriptMessageHandler(self, contentWorld: .page, name: "native")
         bcfg.userContentController.addScriptMessageHandler(self, contentWorld: .page, name: "toTab")
+        bcfg.userContentController.addScriptMessageHandler(self, contentWorld: .page, name: "openPopup")
+
+        let pcfg = WKWebViewConfiguration()
+        pcfg.userContentController.addUserScript(WKUserScript(source: popupStub, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        pcfg.userContentController.addScriptMessageHandler(self, contentWorld: .page, name: "popupToBg")
+        pcfg.userContentController.addScriptMessageHandler(self, contentWorld: .page, name: "popupTabs")
+        popup = WKWebView(frame: NSRect(x: 0, y: 0, width: 320, height: 320), configuration: pcfg)
+        popupWindow = offscreenWindow(for: popup, x: -4000)
         background = WKWebView(frame: .zero, configuration: bcfg)
         background.navigationDelegate = self
         background.loadHTMLString("<!doctype html><title>background</title>", baseURL: URL(string: "https://background.invalid/"))
@@ -123,18 +175,46 @@ final class Harness: NSObject, WKScriptMessageHandlerWithReply, WKScriptMessageH
         ucc.add(self, contentWorld: .page, name: "done")
         ucc.add(self, contentWorld: .page, name: "progress")
         ucc.add(self, contentWorld: contentWorld, name: "progress")
+        ucc.add(self, contentWorld: contentWorld, name: "frameHello")
         let errors = "addEventListener('error', e => webkit.messageHandlers.progress.postMessage('page error: ' + e.message + ' ' + e.filename + ':' + e.lineno)); addEventListener('unhandledrejection', e => webkit.messageHandlers.progress.postMessage('unhandled rejection: ' + (e.reason && (e.reason.name + ': ' + e.reason.message) || e.reason)));"
         ucc.addUserScript(WKUserScript(source: errors, injectionTime: .atDocumentStart, forMainFrameOnly: false, in: .page))
         ucc.addUserScript(WKUserScript(source: errors, injectionTime: .atDocumentStart, forMainFrameOnly: false, in: contentWorld))
         page = WKWebView(frame: NSRect(x: 0, y: 0, width: 1000, height: 700), configuration: cfg)
         page.navigationDelegate = self
-        // A window off every screen, ordered in but never seen and never
-        // active: WebKit only takes real mouse and key events for a window
-        // that is ordered in (one that is merely created gets none).
-        window = NSWindow(contentRect: NSRect(x: -3000, y: -3000, width: 1000, height: 700),
-                          styleMask: [.borderless], backing: .buffered, defer: false)
-        window.contentView = page
-        window.orderFrontRegardless()
+        window = offscreenWindow(for: page, x: -3000)
+    }
+
+    // Runs a script in the popup, again if the popup reloaded under it:
+    // openPopup loads it afresh, as Safari opens a fresh popup, and a script
+    // caught in that navigation ends without an answer.
+    func popupEval(_ js: String, _ args: [String: Any], attempts: Int = 10, _ done: @escaping (Any?) -> Void) {
+        popup.callAsyncJavaScript(js, arguments: args, in: nil, in: .page) { r in
+            switch r {
+            case .success(let v) where !(v is NSNull) && v != nil: done(v)
+            default:
+                if attempts <= 1 { done(nil); return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { self.popupEval(js, args, attempts: attempts - 1, done) }
+            }
+        }
+    }
+
+    // A window off every screen, ordered in but never seen and never active:
+    // WebKit only takes real mouse and key events for a window that is
+    // ordered in (one that is merely created gets none).  Off every screen,
+    // it counts as hidden, and WebKit throttles then suspends a hidden page
+    // (a long quiet test stopped dead a second in), so occlusion detection is
+    // turned off (WebKit SPI, test only).
+    func offscreenWindow(for view: WKWebView, x: CGFloat) -> NSWindow {
+        let w = NSWindow(contentRect: NSRect(x: x, y: -3000, width: view.frame.width, height: view.frame.height),
+                         styleMask: [.borderless], backing: .buffered, defer: false)
+        w.contentView = view
+        w.orderFrontRegardless()
+        let occlusion = NSSelectorFromString("_setWindowOcclusionDetectionEnabled:")
+        if view.responds(to: occlusion) {
+            typealias Set = @convention(c) (AnyObject, Selector, Bool) -> Void
+            unsafeBitCast(view.method(for: occlusion), to: Set.self)(view, occlusion, false)
+        }
+        return w
     }
 
     func webView(_ w: WKWebView, didFinish n: WKNavigation!) {
@@ -155,6 +235,7 @@ final class Harness: NSObject, WKScriptMessageHandlerWithReply, WKScriptMessageH
         }
         switch m.name {
         case "toBg":
+            if !m.frameInfo.isMainFrame, let u = m.frameInfo.request.url?.absoluteString { frames[frameHash(u)] = m.frameInfo }
             // The sender as Safari describes it, from the frame the message came from.
             let sender: [String: Any] = [
                 "url": m.frameInfo.request.url?.absoluteString ?? "",
@@ -172,14 +253,42 @@ final class Harness: NSObject, WKScriptMessageHandlerWithReply, WKScriptMessageH
                 }
             }
         case "native":
-            MIDIHub.shared.handle(m.body as? [String: Any] ?? [:]) { r in DispatchQueue.main.async { replyHandler(r, nil) } }
+            // One native request at a time, as Safari delivers them: measured
+            // on Safari 27, never more than one in flight to the extension, so
+            // a request waits while a long poll is open.  A harness that ran
+            // them concurrently could not see a send held behind a receive.
+            nativeQueue.append((m.body as? [String: Any] ?? [:], replyHandler))
+            nextNative()
         case "toTab":
-            page.callAsyncJavaScript("return await __toContent(msg)", arguments: ["msg": m.body], in: nil, in: contentWorld) { r in
+            // To the top frame, or with no frame named to every frame, the
+            // first answer winning, as tabs.sendMessage does.
+            let body = m.body as? [String: Any] ?? [:]
+            let msg = body["msg"] ?? NSNull()
+            var targets: [WKFrameInfo?] = [nil]
+            if body["frameId"] as? Int == nil { targets += frames.values.map { Optional($0) } }
+            var left = targets.count, answered = false
+            for frame in targets {
+                page.callAsyncJavaScript("return await __toContent(msg)", arguments: ["msg": msg], in: frame, in: contentWorld) { r in
+                    left -= 1
+                    if answered { return }
+                    if case .success(let v) = r, v != nil, !(v is NSNull) { answered = true; replyHandler(v, nil) }
+                    else if left == 0 { answered = true; replyHandler(nil, nil) }
+                }
+            }
+        case "openPopup":
+            popup.loadFileURL(URL(fileURLWithPath: extDir + "/popup.html"), allowingReadAccessTo: URL(fileURLWithPath: extDir))
+            replyHandler(true, nil)
+        case "popupToBg":
+            background.callAsyncJavaScript("return await __deliver(msg, sender)",
+                                           arguments: ["msg": m.body, "sender": ["url": "webmidi-ext://ext/popup.html"]],
+                                           in: nil, in: .page) { r in
                 switch r {
                 case .success(let v): replyHandler(v, nil)
                 case .failure(let e): replyHandler(nil, "\(e)")
                 }
             }
+        case "popupTabs":
+            replyHandler([["id": 1, "url": page.url?.absoluteString ?? "", "incognito": false]], nil)
         case "harness":
             action(m.body as? [String: Any] ?? [:], replyHandler)
         default:
@@ -189,6 +298,10 @@ final class Harness: NSObject, WKScriptMessageHandlerWithReply, WKScriptMessageH
 
     func userContentController(_ u: WKUserContentController, didReceive m: WKScriptMessage) {
         if m.name == "progress" { if verbose { log("  .. \(m.body)") }; return }
+        if m.name == "frameHello" {
+            if !m.frameInfo.isMainFrame, let u = m.frameInfo.request.url?.absoluteString { frames[frameHash(u)] = m.frameInfo }
+            return
+        }
         guard m.name == "done" else { return }
         var failed = 0
         for r in m.body as? [[Any]] ?? [] {
@@ -212,41 +325,65 @@ final class Harness: NSObject, WKScriptMessageHandlerWithReply, WKScriptMessageH
             }
         case "forget":
             // As the popup's Reset does: through setGrant, which tells the pages.
-            background.callAsyncJavaScript("await setGrant(o, 'midi', null); await setGrant(o, 'sysex', null); return true",
+            background.callAsyncJavaScript("for (const k of ['midi', 'sysex', 'dismissed', 'embargo']) await setGrant(o, k, null); return true",
                                            arguments: ["o": a["origin"] as? String ?? ""], in: nil, in: .page) { r in reply(try? r.get(), nil) }
-        case "prompt":
-            // What the prompt shows, read through the closed shadow root.
+        case "badge":
+            background.callAsyncJavaScript("return __badge", arguments: [:], in: nil, in: .page) { r in reply(try? r.get(), nil) }
+        case "question":
+            // What the toolbar popup asks, once it has drawn; null if nothing.
+            popupEval("""
+                for (let i = 0; i < 20; i++) {
+                    const a = document.getElementById('ask'), q = document.getElementById('askQuestion');
+                    if (a && !a.hidden && q && q.textContent) return a.textContent;
+                    await new Promise(r => setTimeout(r, 50));
+                }
+                return null;
+                """, [:], attempts: a["expect"] as? Bool == false ? 1 : 10) { v in reply(v ?? NSNull(), nil) }
+        case "decide":
+            // A real click on the popup's Allow or Don't Allow.
+            let sel = a["selector"] as? String ?? "#askAllow"
+            popupEval("""
+                for (let i = 0; i < 20; i++) {
+                    const b = document.querySelector(sel), a = document.getElementById('ask');
+                    if (b && a && !a.hidden) {
+                        const rc = b.getBoundingClientRect();
+                        if (rc.width) return [rc.x + rc.width / 2, rc.y + rc.height / 2];
+                    }
+                    await new Promise(r => setTimeout(r, 50));
+                }
+                return null;
+                """, ["sel": sel]) { v in
+                guard let p = v as? [Double] else { reply(false, nil); return }
+                self.mouseClick(in: self.popup, window: self.popupWindow, x: p[0], y: p[1])
+                reply(true, nil)
+            }
+        case "notice":
+            // What the page's notice shows, read through its closed shadow root.
             page.callAsyncJavaScript("""
-                const r = __roots[__roots.length - 1];
-                const host = r && r.host;
-                if (!host || !host.isConnected) return null;
-                return { text: r.querySelector('.wrap').textContent, count: __roots.length };
-                """, arguments: [:], in: nil, in: contentWorld) { r in reply(try? r.get(), nil) }
+                const r = [...__roots].reverse().find(x => x.host && x.host.isConnected && x.host.localName === 'webmidi-notice');
+                if (!r) return null;
+                return { text: r.querySelector('.wrap').textContent, buttons: [...r.querySelectorAll('button')].map(b => b.textContent) };
+                """, arguments: [:], in: nil, in: contentWorld) { r in reply((try? r.get()) ?? NSNull(), nil) }
         case "untrustedClick":
             page.callAsyncJavaScript("""
-                const r = __roots[__roots.length - 1];
-                const b = r && r.querySelector(sel);
+                const r = [...__roots].reverse().find(x => x.host && x.host.isConnected && x.host.localName === 'webmidi-notice');
+                const b = r && r.querySelector('button');
                 if (!b) return false;
-                b.disabled = false;
                 b.click();
                 b.dispatchEvent(new MouseEvent('click', { bubbles: true }));
                 return true;
-                """, arguments: ["sel": a["selector"] as? String ?? ".yes"], in: nil, in: contentWorld) { r in reply(try? r.get(), nil) }
-        case "click":
-            let sel = a["selector"] as? String ?? ".yes"
-            // Waits out the prompt's half-second guard, then clicks for real.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-                self.page.callAsyncJavaScript("""
-                    const r = __roots[__roots.length - 1];
-                    const b = r && r.querySelector(sel);
-                    if (!b) return null;
-                    const rc = b.getBoundingClientRect();
-                    return [rc.x + rc.width / 2, rc.y + rc.height / 2];
-                    """, arguments: ["sel": sel], in: nil, in: contentWorld) { r in
-                    guard let p = (try? r.get()) as? [Double] else { reply(false, nil); return }
-                    self.mouseClick(x: p[0], y: p[1])
-                    reply(true, nil)
-                }
+                """, arguments: [:], in: nil, in: contentWorld) { r in reply(try? r.get(), nil) }
+        case "noticeClick":
+            page.callAsyncJavaScript("""
+                const r = [...__roots].reverse().find(x => x.host && x.host.isConnected && x.host.localName === 'webmidi-notice');
+                const b = r && r.querySelector('button');
+                if (!b) return null;
+                const rc = b.getBoundingClientRect();
+                return [rc.x + rc.width / 2, rc.y + rc.height / 2];
+                """, arguments: [:], in: nil, in: contentWorld) { r in
+                guard let p = (try? r.get()) as? [Double] else { reply(false, nil); return }
+                self.mouseClick(in: self.page, window: self.window, x: p[0], y: p[1])
+                reply(true, nil)
             }
         case "escape":
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
@@ -258,9 +395,9 @@ final class Harness: NSObject, WKScriptMessageHandlerWithReply, WKScriptMessageH
         }
     }
 
-    func mouseClick(x: Double, y: Double) {
-        let local = NSPoint(x: x, y: page.isFlipped ? y : page.bounds.height - y)
-        let at = page.convert(local, to: nil)
+    func mouseClick(in view: WKWebView, window: NSWindow, x: Double, y: Double) {
+        let local = NSPoint(x: x, y: view.isFlipped ? y : view.bounds.height - y)
+        let at = view.convert(local, to: nil)
         for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
             let e = NSEvent.mouseEvent(with: type, location: at, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
                                        windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
