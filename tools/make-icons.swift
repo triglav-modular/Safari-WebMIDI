@@ -76,13 +76,28 @@ func flat(_ rounded: Bool) -> (CGContext, CGFloat) -> Void {
         glyph(cg, in: r.insetBy(dx: s * 0.14, dy: s * 0.14), white: true)
     }
 }
-// The tab favicons are the glyph alone, in the icon's white, on nothing.
-// Safari's tab bar puts its own backing plate behind a favicon that would
-// not show against the bar (a black tile got a light plate in dark mode),
-// so the glyph is left for Safari to back as it needs.
-for s in [16, 32, 96] {
-    write("favicon-\(s).png", render(s) { cg, s in glyph(cg, in: CGRect(x: 0, y: 0, width: s, height: s).insetBy(dx: s * 0.02, dy: s * 0.02), white: true) })
+// The tab favicon: the glyph in the icon's white over a black disc, its ring
+// 2% of the diameter heavier than the glyph's.  Safari's tab bar (27) backs a
+// favicon with a plate of its own: white in dark mode when the icon's key
+// colour, which is weighted to its outer part, is dark and holds over half of
+// it; black in light mode when every edge of the icon is light.  So any black
+// tile or square takes the white plate in dark mode.  Here the ring holds the
+// outer part, neither plate comes, and the disc shows as drawn on both bars.
+// The disc's edge sits under the middle of the ring, so no black shows
+// outside it.  The page links the 32 px one only, Safari's size.
+let ringWidth: CGFloat = 84.0 / 1024   // the glyph's ring, as a fraction of its diameter
+func favicon(_ cg: CGContext, _ s: CGFloat) {
+    let r = CGRect(x: 0, y: 0, width: s, height: s)
+    cg.addEllipse(in: r.insetBy(dx: s * ringWidth / 2, dy: s * ringWidth / 2))
+    cg.setFillColor(CGColor(gray: 0, alpha: 1)); cg.fillPath()
+    glyph(cg, in: r, white: true)
+    // Thicken the ring inward, leaving its outer edge to the glyph.
+    let band = s * (ringWidth / 2 + 0.02)
+    let inset = s * ringWidth / 2 + band / 2
+    cg.setStrokeColor(glyphWhite); cg.setLineWidth(band)
+    cg.strokeEllipse(in: r.insetBy(dx: inset, dy: inset))
 }
+for s in [16, 32, 96] { write("favicon-\(s).png", render(s, favicon)) }
 write("apple-touch-icon.png", render(180, flat(false)))
 let set = out.appendingPathComponent("AppIcon.iconset")
 try? FileManager.default.createDirectory(at: set, withIntermediateDirectories: true)
