@@ -165,6 +165,54 @@ function permissionState(sender, sysex) {
     });
 }
 
+// --- Safari's limit on native requests ------------------------------------------
+// Safari counts every sendNativeMessage against the extension for about five
+// seconds after it is answered, and refuses the next one once the count
+// reaches 151: "Invalid call to runtime.sendNativeMessage() ... (SFErrorDomain
+// error 3.)".  Measured on Safari 27 (2026-09-26): 4.4 to 5.3 s a request,
+// and a refusal every time the count reached 151.  Receiving every 15 ms kept
+// it at 130 to 147, so notes sent on top were refused and lost: 18 of 65 in a
+// 218e calibration sweep.  So requests go out at a steady RATE a second,
+// with BURST in hand: however they bunch, no five or six seconds hold more
+// than BURST + 6 * RATE = 145 of them.  Sends go first; a receive waits
+// while fewer than RECV_RESERVE are in hand, so it never takes the last few
+// a send might need.  One Safari refuses anyway never reached the native
+// side, so it is tried again rather than lost.
+var RATE = 20, BURST = 25, RECV_RESERVE = 6;
+var tokens = BURST, filled = Date.now(), waiting = [], budgetTimer = null;
+function pump() {
+    var now = Date.now();
+    tokens = Math.min(BURST, tokens + (now - filled) * RATE / 1000);
+    filled = now;
+    [true, false].forEach(function (send) {
+        for (var i = 0; i < waiting.length;) {
+            if (waiting[i].send !== send) { i++; continue; }
+            if (tokens < (send ? 1 : 1 + RECV_RESERVE)) break;
+            tokens -= 1;
+            waiting.splice(i, 1)[0].go();
+        }
+    });
+    if (waiting.length && !budgetTimer) {
+        budgetTimer = setTimeout(function () { budgetTimer = null; pump(); }, Math.ceil(1000 / RATE));
+    }
+}
+function admitted(send) {
+    return new Promise(function (go) { waiting.push({ send: send, go: go }); pump(); });
+}
+function refusedBySafari(e) { return /SFErrorDomain error 3\b/.test(String(e && e.message || e)); }
+function sendNative(cmd) {
+    var tries = 0;
+    function attempt() {
+        return admitted(cmd.cmd !== 'recv').then(function () {
+            return browser.runtime.sendNativeMessage(NATIVE_APP, cmd);
+        }).catch(function (e) {
+            if (!refusedBySafari(e) || ++tries > 20) throw e;
+            return new Promise(function (r) { setTimeout(r, 250); }).then(attempt);
+        });
+    }
+    return attempt();
+}
+
 // --- the native side -----------------------------------------------------------
 // Each document is its own client (content.js makes the id): its scheduled
 // sends are its own to clear, and it reads only what arrived after its first
@@ -194,7 +242,7 @@ function native(sender, req, doc) {
                 break;
             default: return { error: error('NotSupportedError', 'Unknown request') };
             }
-            return browser.runtime.sendNativeMessage(NATIVE_APP, cmd).then(function (r) {
+            return sendNative(cmd).then(function (r) {
                 if (!r) return { error: error('AbortError', 'The MIDI system failed to start.') };
                 if (r.error) return { error: error('InvalidStateError', 'Platform dependent initialization failed.') };
                 if (req.cmd === 'recv' && !floors.has(client)) {

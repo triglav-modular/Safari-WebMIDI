@@ -44,9 +44,15 @@ page ── shim.js (page world) ──MessageChannel── content.js (isolated
   order, with one fixed offset between the page's clock and CoreMIDI's.
 - **Receiving.** Safari delivers the extension's native requests one at a
   time, so a receive left waiting holds every send behind it (a one-second
-  long poll put note-ons up to a second late). A receive waits at most 15 ms,
-  and only while some input is open; otherwise a check that does not wait
-  runs every 250 ms, to notice ports coming and going.
+  long poll put note-ons up to a second late). While an input is open, a page
+  that has sent in the last two seconds checks for input every 50 ms without
+  waiting, and one that only listens waits up to 45 ms for it. With no input
+  open, a check runs every 250 ms, to notice ports coming and going.
+- **Safari's request limit.** Safari counts each native request for about
+  five seconds and refuses more than 151 at once (`SFErrorDomain error 3`).
+  Receiving every 15 ms kept the count near it, and notes sent on top were
+  refused and lost. The background sends at most 20 requests a second, with
+  25 in hand, sends first, and tries a refused one again.
 
 ## Where it follows the spec rather than Chrome
 
@@ -124,8 +130,9 @@ MIDIHub against a virtual CoreMIDI loop: order, sysex up to 10 kB, timestamps,
 The built extension end to end in WebKit: shim and content script injected as
 Safari injects them, background in its own view, real clicks on the prompt.
 `--wpt` runs the web-platform-tests Web MIDI IDL test instead. The harness
-delivers native requests one at a time, as Safari does, and needs no signed
-build: `tools/assemble-extension.sh` lays out the extension's files.
+delivers native requests one at a time and refuses them past Safari's limit,
+as Safari does, and needs no signed build: `tools/assemble-extension.sh`
+lays out the extension's files.
 
 ```bash
 node tests/shim/test-clear.js

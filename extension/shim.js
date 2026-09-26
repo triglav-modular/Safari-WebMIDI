@@ -476,6 +476,7 @@
         MAX_UNACKED: 10 * 1024 * 1024,
         send: function (id, bytes, wall) {
             if (this.MAX_UNACKED - this.unacked < bytes.length) return;
+            this.lastSend = root.performance.now();
             this.unacked += bytes.length;
             this.queue.push([id, bytes, wall]);
             this.flush();
@@ -517,11 +518,19 @@
         // Safari delivers the extension's native requests one at a time, so a
         // receive left open holds every send behind it: a one-second long
         // poll put note-ons up to a second late (the 218e calibration sweep,
-        // 2026-09-26).  So a receive waits at most LISTEN_WAIT ms, and only
-        // while some input is open; otherwise a check that does not wait runs
-        // every IDLE_EVERY ms, to notice ports coming and going.
-        LISTEN_WAIT: 15,
+        // 2026-09-26).  And it allows only so many requests in a few seconds
+        // (background.js), so receiving cannot simply run all the time.
+        // While some input is open, a page that has sent in the last
+        // SENT_LATELY ms checks without waiting every LISTEN_EVERY ms, so its
+        // sends never queue behind a receive; one that only listens waits up
+        // to LISTEN_WAIT ms for input, so input arrives as it comes.  Both
+        // come to about fifteen requests a second.  With no input open, a
+        // check every IDLE_EVERY ms notices ports coming and going.
+        LISTEN_EVERY: 50,
+        LISTEN_WAIT: 45,
+        SENT_LATELY: 2000,
         IDLE_EVERY: 250,
+        lastSend: -Infinity,
         listening: function () {
             return accesses.some(function (a) {
                 return a.__inputs.some(function (p) { return p.__connection === 'open'; });
@@ -531,11 +540,14 @@
             if (this.polling) return;
             this.polling = true;
             var self = this;
+            function sending() { return root.performance.now() - self.lastSend < self.SENT_LATELY; }
             function later() {
-                if (self.listening()) next(); else root.setTimeout(next, self.IDLE_EVERY);
+                if (!self.listening()) root.setTimeout(next, self.IDLE_EVERY);
+                else if (sending()) root.setTimeout(next, self.LISTEN_EVERY);
+                else next();
             }
             function next() {
-                var wait = self.listening() ? self.LISTEN_WAIT : 0;
+                var wait = self.listening() && !sending() ? self.LISTEN_WAIT : 0;
                 call('recv', { since: self.cursor, gen: self.gen, wait: wait }).then(function (r) {
                     self.cursor = r.seq;
                     var origin = root.performance.timeOrigin;

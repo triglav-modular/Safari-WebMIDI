@@ -283,37 +283,73 @@ function loopOf(access) {
     await Promise.race([done, sleep(3000)]);
     eq(seen.join(), [...Array(64).keys()].join());
   });
-  // The 218e calibration sweep's pattern: note-off, 60 ms, note-on, then a
-  // second of listening.  Safari runs one native request at a time, so a
-  // receive left open would hold the note-on back by up to a second.
-  async function sweepLatencies(listen) {
-    const arrived = new Map();
-    loop.inp.onmidimessage = listen ? (e => { if (e.data[0] === 0x95) arrived.set(e.data[1], performance.now()); }) : null;
-    if (!listen) loop.inp.addEventListener('midimessage', e => { if (e.data[0] === 0x95) arrived.set(e.data[1], performance.now()); });
-    const sent = new Map(), late = [];
-    for (let i = 0; i < 12; i++) {
+  // What reached the loop's destination since page time `from`, as
+  // [page ms, status, data1, data2]: sends timed where they arrive, not
+  // where they come back through the receive path.
+  async function arrivalsSince(from) {
+    const list = await harness('arrivals', { from: performance.timeOrigin + from });
+    return list.map(([ms, w]) => [ms - performance.timeOrigin, (w >>> 16) & 0xff, (w >>> 8) & 0xff, w & 0xff]);
+  }
+  // The 218e calibration sweep's pattern, with an input open as the sweep
+  // has: note-off, 60 ms, note-on, then listening.  Safari runs one native
+  // request at a time, so a receive left open held note-ons back by up to a
+  // second; and it refuses requests past its limit (the harness counts them
+  // as Safari does), which lost 18 of 65 notes in a sweep.  Eight seconds,
+  // past the five that Safari holds each request for.
+  await test('the sweep\u2019s off, 60 ms, on: every note-on goes promptly, after its note-off, and Safari refuses nothing', async () => {
+    loop.inp.onmidimessage = () => {};
+    await harness('safari', { reset: true });
+    const t0 = performance.now(), sent = new Map();
+    for (let i = 0; i < 16; i++) {
       loop.out.send([0x85, 40 + i, 0]);
       await sleep(60);
       sent.set(50 + i, performance.now());
       loop.out.send([0x95, 50 + i, 100]);
-      await sleep(250 + Math.random() * 700);
+      await sleep(250 + Math.random() * 400);
     }
     await sleep(300);
-    for (const [note, t] of sent) late.push(arrived.has(note) ? arrived.get(note) - t : Infinity);
-    return late;
-  }
-  await test('a note-on is not held behind an open receive (the sweep\u2019s off, 60 ms, on)', async () => {
-    const late = await sweepLatencies(true);
-    const worst = Math.max(...late);
-    assert(worst < 60, 'worst ' + worst.toFixed(0) + ' ms; all ' + late.map(x => x.toFixed(0)).join(' '));
+    const got = await arrivalsSince(t0), off = new Map(), on = new Map();
+    got.forEach(a => { if (a[1] === 0x85) off.set(a[2], a[0]); if (a[1] === 0x95) on.set(a[2], a[0]); });
+    const late = [...sent].map(([n, t]) => on.has(n) ? on.get(n) - t : Infinity);
+    const gaps = [...sent.keys()].map(n => on.has(n) && off.has(n - 10) ? on.get(n) - off.get(n - 10) : -1);
+    const safari = await harness('safari');
+    assert(Math.max(...late) < 30, 'note-on arrived after ' + late.map(x => x.toFixed(0)).join(' ') + ' ms');
+    assert(Math.min(...gaps) > 40, 'note-off to note-on ' + gaps.map(x => x.toFixed(0)).join(' ') + ' ms');
+    eq(safari.refusals, 0, 'requests Safari refused (its count peaked at ' + safari.peak + ')');
+  });
+  await test('a burst of sends past Safari\u2019s request limit arrives whole and in order', async () => {
+    loop.inp.onmidimessage = () => {};
+    const t0 = performance.now(), n = 1500;
+    for (let i = 0; i < n; i++) { loop.out.send([0xb3, i >> 7, i & 127]); if (i % 3 === 2) await sleep(2); }
+    let got = [];
+    for (let k = 0; k < 150 && got.length < n; k++) {
+      await sleep(100);
+      got = (await arrivalsSince(t0)).filter(a => a[1] === 0xb3);
+    }
+    eq(got.length, n, 'arrived');
+    eq(got.map(a => a[2] * 128 + a[3]).join(), [...Array(n).keys()].join());
+  });
+  await test('a send Safari refuses is tried again, not lost', async () => {
+    loop.inp.onmidimessage = () => {};
+    const t0 = performance.now();
+    await harness('safari', { reset: true, refuseNext: 3 });
+    loop.out.send([0x96, 1, 1]);
+    await sleep(1500);
+    const safari = await harness('safari');
+    assert(safari.refusals >= 3, 'refused ' + safari.refusals);
+    eq((await arrivalsSince(t0)).filter(a => a[1] === 0x96).length, 1);
   });
   await test('a timestamp delays the send', async () => {
     const due = performance.now() + 250;
     const got = waitFor(loop.inp, 'midimessage', e => e.data[0] === 0x93, 2000);
     loop.out.send([0x93, 1, 1], due);
     const e = await got;
-    const late = performance.now() - due;
-    assert(late > -5 && late < 40, 'arrived ' + late.toFixed(1) + ' ms from due');
+    // At the destination, on time; back at the page, after the receive
+    // path's own delay (a page that has just sent checks every 50 ms).
+    const at = (await arrivalsSince(due - 100)).find(a => a[1] === 0x93);
+    const late = at ? at[0] - due : Infinity, back = performance.now() - due;
+    assert(late > -5 && late < 10, 'arrived ' + late.toFixed(1) + ' ms from due');
+    assert(back > -5 && back < 150, 'came back ' + back.toFixed(1) + ' ms from due');
     assert(Math.abs(e.timeStamp - due) < 15, 'timeStamp ' + (e.timeStamp - due).toFixed(1) + ' ms from due');
   });
   await test('clear() drops a send that has not gone yet', async () => {

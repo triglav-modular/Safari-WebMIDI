@@ -34,12 +34,25 @@ let verbose = ProcessInfo.processInfo.environment["WEBMIDI_VERBOSE"] != nil
 var client = MIDIClientRef()
 MIDIClientCreateWithBlock("webkit harness" as CFString, &client, nil)
 var loops: [String: (MIDIEndpointRef, MIDIEndpointRef)] = [:]
+// What reached a loop's destination, and when (wall-clock ms), so a test can
+// time a send where it arrives, without the receive path's own delay.
+var arrivals: [(Double, UInt32)] = []
+let arrivalsLock = NSLock()
 // A loop: what reaches the destination comes back out of the source.
 func plug(_ name: String) {
     var src = MIDIEndpointRef(), dst = MIDIEndpointRef()
     MIDISourceCreateWithProtocol(client, name as CFString, ._1_0, &src)
     let s = src
-    MIDIDestinationCreateWithProtocol(client, name as CFString, ._1_0, &dst) { list, _ in MIDIReceivedEventList(s, list) }
+    MIDIDestinationCreateWithProtocol(client, name as CFString, ._1_0, &dst) { list, _ in
+        let now = Date().timeIntervalSince1970 * 1000
+        arrivalsLock.lock()
+        for packet in list.unsafeSequence() where packet.pointee.wordCount > 0 {
+            arrivals.append((now, packet.pointee.words.0))
+        }
+        if arrivals.count > 20000 { arrivals.removeFirst(arrivals.count - 20000) }
+        arrivalsLock.unlock()
+        MIDIReceivedEventList(s, list)
+    }
     loops[name] = (src, dst)
 }
 func unplug(_ name: String) {
@@ -131,16 +144,35 @@ final class Harness: NSObject, WKScriptMessageHandlerWithReply, WKScriptMessageH
     var frames: [Int: WKFrameInfo] = [:]
     var nativeQueue: [([String: Any], (Any?, String?) -> Void)] = []
     var nativeBusy = false
+    // Safari's limit: each request counts for about five seconds after it is
+    // answered, and one that would take the count past 151 is refused
+    // without reaching the extension (measured on Safari 27, 2026-09-26).
+    static let safariLimit = 151, safariHold = 4.8
+    static let safariRefusal = "Invalid call to runtime.sendNativeMessage(). The operation couldn\u{2019}t be completed. (SFErrorDomain error 3.)"
+    var held: [Date] = []
+    var refusals = 0, peak = 0, refuseNext = 0
 
     func nextNative() {
         guard !nativeBusy, !nativeQueue.isEmpty else { return }
-        nativeBusy = true
         let (body, reply) = nativeQueue.removeFirst()
+        let now = Date()
+        held.removeAll { $0 <= now }
+        if held.count >= Harness.safariLimit || refuseNext > 0 {
+            if refuseNext > 0 { refuseNext -= 1 }
+            refusals += 1
+            reply(nil, Harness.safariRefusal)
+            nextNative()
+            return
+        }
+        nativeBusy = true
+        held.append(.distantFuture)
+        peak = max(peak, held.count)
         if verbose && ProcessInfo.processInfo.environment["WEBMIDI_TRACE"] != nil {
-            log(String(format: "  native %.3f %@ queued=%d", Date().timeIntervalSince1970.truncatingRemainder(dividingBy: 100), body["cmd"] as? String ?? "?", nativeQueue.count))
+            log(String(format: "  native %.3f %@ queued=%d held=%d", Date().timeIntervalSince1970.truncatingRemainder(dividingBy: 100), body["cmd"] as? String ?? "?", nativeQueue.count, held.count))
         }
         MIDIHub.shared.handle(body) { r in
             DispatchQueue.main.async {
+                if let i = self.held.firstIndex(of: .distantFuture) { self.held[i] = Date().addingTimeInterval(Harness.safariHold) }
                 reply(r, nil)
                 self.nativeBusy = false
                 self.nextNative()
@@ -318,6 +350,19 @@ final class Harness: NSObject, WKScriptMessageHandlerWithReply, WKScriptMessageH
         switch a["action"] as? String {
         case "plug": plug(a["name"] as! String); reply(true, nil)
         case "unplug": unplug(a["name"] as! String); reply(true, nil)
+        case "arrivals":
+            // [ms, first UMP word] for everything that reached a loop since `from` ms.
+            let from = a["from"] as? Double ?? 0
+            arrivalsLock.lock()
+            let list = arrivals.filter { $0.0 >= from }.map { [$0.0, Double($0.1)] }
+            arrivalsLock.unlock()
+            reply(list, nil)
+        case "safari":
+            // Safari's count of native requests: refusals so far, the highest
+            // count reached, and optionally refuse the next n outright.
+            if let n = a["refuseNext"] as? Int { refuseNext = n }
+            if a["reset"] as? Bool == true { refusals = 0; peak = 0 }
+            reply(["refusals": refusals, "peak": peak], nil)
         case "grants":
             background.callAsyncJavaScript("if (g !== null) __store.grants = JSON.parse(g); return JSON.stringify(__store.grants || {})",
                                            arguments: ["g": (a["set"] as? String) ?? NSNull()], in: nil, in: .page) { r in
