@@ -115,6 +115,37 @@
             : ask({ type: 'policy-self' }).then(function (r) { return r === true; });
     });
 
+    // Safari unloads the extension's background 30 s after the last message
+    // reached it, and a reply it still owes does not count (WebKit,
+    // WebExtensionContext::unloadBackgroundContentIfPossible).  The question
+    // waiting for the person lives there, so one left 30 s went with it: its
+    // Allow did nothing and the page waited for ever.  So while a request
+    // waits, this asks after it every WAITING ms, which keeps the background
+    // loaded, and asks again if the background has lost it anyway.
+    var WAITING = 10000;
+    var waiting = new Set();     // this document's requests still waiting: { check, refuse }
+    function requested(sysex) {
+        return new Promise(function (resolve, reject) {
+            var over = false, timer = setInterval(check, WAITING);
+            var w = { check: check, refuse: function () {
+                end(resolve, { ok: false, error: { name: 'NotAllowedError', message: 'Permission to use Web MIDI API was not granted.' } });
+            } };
+            waiting.add(w);
+            function end(fn, v) {
+                if (over) return;
+                over = true; clearInterval(timer); waiting.delete(w); fn(v);
+            }
+            function send() {
+                ask({ type: 'request', sysex: sysex }).then(function (r) { end(resolve, r); }, function () {});
+            }
+            function check() {
+                ask({ type: 'waiting' }).then(function (known) { if (!over && known !== true) send(); },
+                                              function (e) { end(reject, e); });
+            }
+            send();
+        });
+    }
+
     function native(req) {
         return ask({ type: 'native', req: req }).then(function (r) {
             if (!r || r.error) throw r && r.error ? r.error : { name: 'AbortError', message: 'The MIDI system failed to start.' };
@@ -154,7 +185,7 @@
             };
             switch (m.op) {
             case 'request':
-                ask({ type: 'request', sysex: !!args.sysex }).then(function (r) {
+                requested(!!args.sysex).then(function (r) {
                     if (r && r.ok) done(true); else fail(r && r.error);
                 }, fail);
                 break;
@@ -189,9 +220,8 @@
     }
 
     // --- the notice (top frame only) --------------------------------------------
-    // The question is asked in the extension's toolbar popup, where a page
-    // cannot reach it (background.js), and this notice asks it in the page
-    // too.  A page can restyle, hide or cover what is drawn in its own DOM,
+    // The question is asked here, and in the extension's toolbar popup, where
+    // a page cannot reach it (background.js), when the person opens that.  A page can restyle, hide or cover what is drawn in its own DOM,
     // so a click here proves less than one in the popup.  The notice's Allow
     // is for basic MIDI only, and it takes a click only when:
     //   - the click is the person's (isTrusted), half a second or more after
@@ -306,10 +336,15 @@
         bar.append(close, allow);
         box.append(bar);
         shadow.append(style, box);
+        // A background that has lost the question (unloaded, above) takes no
+        // answer: Not now then refuses this document's requests here, and
+        // Allow asks again at once, so a new notice comes up.
         function dismiss(e) {
             if (!e.isTrusted) return;
             hideNotice();
-            ask({ type: 'notice-dismissed', id: id }).catch(function () {});
+            ask({ type: 'notice-dismissed', id: id }).then(function (taken) {
+                if (taken !== true) waiting.forEach(function (w) { w.refuse(); });
+            }, function () {});
         }
         close.addEventListener('click', dismiss);
         var onKey = function (e) { if (e.key === 'Escape') dismiss(e); };
@@ -322,7 +357,9 @@
         allow.addEventListener('click', function (e) {
             if (!e.isTrusted) return;
             var yes = !sysex && Date.now() - shownAt >= READY_AFTER && unobscured(host);
-            ask({ type: yes ? 'notice-allow' : 'notice-open', id: id }).catch(function () {});
+            ask({ type: yes ? 'notice-allow' : 'notice-open', id: id }).then(function (taken) {
+                if (taken !== true) waiting.forEach(function (w) { w.check(); });
+            }, function () {});
         });
         (document.body || document.documentElement).appendChild(host);
         try { host.showPopover(); } catch (e) {}

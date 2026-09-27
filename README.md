@@ -41,8 +41,9 @@ page ── shim.js (page world) ──MessageChannel── content.js (isolated
   machine (`localhost`, `127.0.0.1`, `[::1]`) is secure, as Safari counts it.
 - **background.js** holds the permission decisions and is the only way to
   CoreMIDI; every request is checked there, as Chrome checks in the browser
-  process. The question is asked in the extension's toolbar popup (with a
-  badge on the button) and in a notice in the page. A page can restyle,
+  process. The question is asked in a notice in the page, with a badge on
+  the extension's toolbar button, whose popup asks it too; the popup does
+  not open by itself, so one prompt is on screen. A page can restyle,
   hide or cover anything drawn in its own DOM, so the notice can allow
   basic MIDI only, and only for a real click at least half a second after it
   appears, while it sits in the top layer with its own style and nothing
@@ -58,6 +59,13 @@ page ── shim.js (page world) ──MessageChannel── content.js (isolated
   else while the popup is open, the popup redraws, and a question just
   shown takes no click for half a second. A question goes, deciding
   nothing, when the documents that asked it go or the tab leaves the site.
+- **Safari unloads the background** 30 s after the last message reaches it
+  (WebKit's `WebExtensionContext::unloadBackgroundContentIfPossible`); a
+  reply it still owes does not count. The question waiting for the person
+  is held there, so while a request waits, its content script asks after it
+  every 10 s, which keeps the background loaded, and asks again if the
+  background has lost it anyway. The notice's Allow on a lost question asks
+  again at once, and its Not now refuses the request.
 - **MIDIHub** schedules timestamped sends itself, in (time, submission)
   order, with one fixed offset between the page's clock and CoreMIDI's.
 - **Receiving.** Safari delivers the extension's native requests one at a

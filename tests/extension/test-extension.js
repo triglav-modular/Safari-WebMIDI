@@ -93,9 +93,10 @@ function popup(b, search = '') {
 }
 
 // The real content.js (placeholders filled) in a window that is or is not
-// a secure context.
-function content(secure) {
-    const on = {}, runtime = [], sent = [];
+// a secure context.  `reply(msg)` answers what it sends the background;
+// its interval timers run when `tick()` says.
+function content(secure, reply) {
+    const on = {}, runtime = [], sent = [], timers = [];
     const win = { isSecureContext: secure, addEventListener(type, fn) { (on[type] = on[type] || []).push(fn); } };
     win.top = win;
     const document = {
@@ -105,12 +106,20 @@ function content(secure) {
     };
     const browser = { runtime: {
         onMessage: { addListener(fn) { runtime.push(fn); } },
-        sendMessage: async msg => { sent.push(msg); return { ok: true }; },
+        sendMessage: async msg => { sent.push(msg); return reply ? reply(msg) : { ok: true }; },
         getURL: p => p
     } };
     const src = read('content.js').replace('__SHIM_SOURCE__', '""').replace('__ICON_DATA_URL__', '""');
-    vm.runInNewContext(src, { window: win, document, browser, location: { origin: SITE, href: SITE + '/' } });
-    return { win, on, runtime, sent };
+    vm.runInNewContext(src, { window: win, document, browser, location: { origin: SITE, href: SITE + '/' },
+                              setInterval: fn => timers.push(fn), clearInterval: id => { timers[id - 1] = null; } });
+    const tick = () => timers.forEach(fn => fn && fn());
+    // A channel from the page, as the shim opens one.
+    function channel() {
+        const got = [], port = { postMessage: m => got.push(m) };
+        on.message[0]({ source: win, data: { __webmidi_connect: 1 }, ports: [port], stopImmediatePropagation() {} });
+        return { got, send: m => port.onmessage({ data: m }) };
+    }
+    return { win, on, runtime, sent, tick, channel };
 }
 
 (async () => {
@@ -121,6 +130,7 @@ function content(secure) {
         await turn();
         const shown = await b.pending();
         check('the question on show has an id', shown && typeof shown.id === 'string' && shown.sysex === false, shown);
+        check('asking opens no popup by itself', b.popupOpens === 0, b.popupOpens);
         const notice = b.toTab.find(m => m.type === 'notice' && m.show);
         check('and the page’s notice names it', notice && notice.id === shown.id, notice);
         const upgraded = b.call({ type: 'request', sysex: true, doc: 'd1' });
@@ -295,6 +305,45 @@ function content(secure) {
         failing.onUpdated.forEach(fn => fn(1, { url: 'https://elsewhere.example/' }));
         await turn();
         check('and goes when the question does', failing.removed.includes(101), failing.removed);
+    });
+
+    await section('a background unloaded', async () => {
+        // Safari unloads an idle background 30 s after the last message, and
+        // the question waiting in it goes too.  A request asks after itself
+        // while it waits, which keeps the background, and asks again if the
+        // background has lost it.
+        const b = background();
+        const q = b.call({ type: 'request', doc: 'd1' });
+        await turn();
+        check('the background knows a request it owes a reply', (await b.call({ type: 'waiting', doc: 'd1' })) === true);
+        check('and not another document’s', (await b.call({ type: 'waiting', doc: 'd2' })) === false);
+        await b.call({ type: 'decide', tabId: 1, id: (await b.pending()).id, answer: 'allow' }, POPUP);
+        await q;
+        check('nor one it has answered', (await b.call({ type: 'waiting', doc: 'd1' })) === false);
+        check('and a background loaded afresh knows none', (await background().call({ type: 'waiting', doc: 'd1' })) === false);
+
+        // The page's side: the first request is lost with the background.
+        let known = true, requests = 0;
+        const c = content(true, msg => {
+            if (msg.type === 'waiting') return known;
+            if (msg.type === 'request' && ++requests === 1) return new Promise(() => {});
+            return { ok: true };
+        });
+        const ch = c.channel();
+        ch.send({ id: 1, op: 'request', args: {} });
+        await turn();
+        c.tick();
+        await turn();
+        check('a request waiting asks after itself, and asks nothing again while it is known',
+              c.sent.filter(m => m.type === 'waiting').length === 1 && requests === 1, c.sent.map(m => m.type));
+        known = false;
+        c.tick();
+        await turn(); await turn();
+        check('once the background has lost it, it asks again', requests === 2, c.sent.map(m => m.type));
+        check('and the page has its answer', ch.got.length === 1 && ch.got[0].id === 1 && ch.got[0].ok === true, ch.got);
+        c.tick();
+        await turn();
+        check('then it stops asking', c.sent.filter(m => m.type === 'waiting').length === 2, c.sent.map(m => m.type));
     });
 
     // --- 2. insecure documents get nothing ------------------------------------------

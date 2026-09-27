@@ -126,9 +126,11 @@ function originOf(sender, doc) {
 // restyle, hide or cover anything drawn in its own DOM, so a click on the
 // notice proves less than one in the popup: the notice can say no, and yes
 // only to basic MIDI, never to sysex, which can rewrite a device's settings
-// and firmware.  A pending question puts a badge on the button and opens the
-// popup; the notice's Allow… opens it again, or where Safari's toolbar has no
-// Web MIDI button, the same question in a window of the extension's own.
+// and firmware.  A pending question puts a badge on the button.  The popup
+// opens when the person opens it, or from the notice's Allow…, never by
+// itself: opened as the question was asked, it put two prompts on screen at
+// once.  Where Safari's toolbar has no Web MIDI button, Allow… opens the same
+// question in a window of the extension's own.
 //
 // Each question has an id of its own, and an answer counts only for the
 // question it names: the popup's Allow once carried just the tab, and a
@@ -164,7 +166,6 @@ function askUser(tabId, from, sysex, client) {
     browser.tabs.sendMessage(tabId, { type: 'notice', show: true, id: entry.id, site: from.host, sysex: sysex }, { frameId: 0 })
         .catch(function () {});
     questionChanged(tabId);
-    Promise.resolve().then(function () { return browser.action.openPopup(); }).catch(function () {});
     return entry.answer;
 }
 // The question where the page cannot reach it: the toolbar popup, or where
@@ -416,6 +417,21 @@ function native(sender, req, doc) {
     return result;
 }
 
+// Requests still owed a reply, by client.  A page's content script asks
+// after its request while it waits, which keeps Safari from unloading this
+// background, and asks again if the answer is no (content.js): a background
+// unloaded anyway has lost the question with everything else in memory.
+var inflight = new Map();    // client -> requests
+function tracked(client, work) {
+    inflight.set(client, (inflight.get(client) || 0) + 1);
+    function done() {
+        var n = inflight.get(client) - 1;
+        if (n > 0) inflight.set(client, n); else inflight.delete(client);
+    }
+    work.then(done, done);
+    return work;
+}
+
 // --- messages --------------------------------------------------------------------
 function fromExtensionPage(sender) {
     return !!sender.url && sender.url.indexOf(browser.runtime.getURL('')) === 0;
@@ -423,7 +439,8 @@ function fromExtensionPage(sender) {
 browser.runtime.onMessage.addListener(function (msg, sender) {
     if (!msg) return undefined;
     switch (msg.type) {
-    case 'request': return request(sender, !!msg.sysex, msg.doc);
+    case 'request': return tracked(clientOf(sender, msg.doc), request(sender, !!msg.sysex, msg.doc));
+    case 'waiting': return Promise.resolve(inflight.has(clientOf(sender, msg.doc)));
     case 'native': return native(sender, msg.req || {}, msg.doc);
     case 'permission': return permissionState(sender, !!msg.sysex, msg.doc);
     case 'policy-self': return policyOf(sender, msg.doc);

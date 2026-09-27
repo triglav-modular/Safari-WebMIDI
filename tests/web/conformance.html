@@ -118,20 +118,24 @@ function loopOf(access) {
       .then(st => Object.getOwnPropertyNames(st).includes('state') ? 'ours' : 'safari', e => 'safari: ' + e.name);
     assert(r !== 'ours', r);
   });
-  // The question is asked in the toolbar popup, where the page cannot reach
-  // it, and in a notice in the page, which can say no, and yes only to
-  // basic MIDI when it can be seen as it was drawn.
+  // The question is asked in a notice in the page, which can say no, and yes
+  // only to basic MIDI when it can be seen as it was drawn, and in the
+  // toolbar popup, where the page cannot reach it, when the person opens it.
+  const opensAtFirst = (await harness('opens')).popup;
   let p = navigator.requestMIDIAccess();
   const state1 = settled(p);
-  await test('a first request asks in the toolbar popup, with a badge', async () => {
-    const q = await harness('question');
-    assert(q && /Allow \u201c.*\u201d to use your MIDI devices\?/.test(q), q);
+  await test('a first request shows a notice, with Not now and Allow, and a badge', async () => {
+    const n = await noticeShown();
+    assert(/is asking to use your MIDI devices/.test(n.text), n.text);
+    eq(n.buttons.join(), 'Not now,Allow');
     eq(await harness('badge'), '1');
   });
-  await test('the page shows a notice too, with Not now and Allow', async () => {
-    const n = await harness('notice');
-    assert(n && /is asking to use your MIDI devices/.test(n.text), n && n.text);
-    eq(n.buttons.join(), 'Not now,Allow');
+  await test('the popup does not open by itself, and asks the question when opened', async () => {
+    await sleep(300);
+    eq((await harness('opens')).popup, opensAtFirst, 'popups opened');
+    await harness('toolbarClick');
+    const q = await harness('question');
+    assert(q && /Allow “.*” to use your MIDI devices\?/.test(q), q);
   });
   await test('no click in the page can answer yes', async () => {
     await harness('untrustedClick');
@@ -199,6 +203,33 @@ function loopOf(access) {
     eq(await harness('badge'), '', 'the badge goes');
     await harness('grants', { set: '{}' });
   });
+  // Safari unloads an idle background 30 s after its last message, and the
+  // question waiting in it goes too.  An answer to the lost question asks
+  // again (Allow) or refuses (Not now), and nothing waits for ever.
+  await test('Allow on a question the background has lost asks again, and the new one grants', async () => {
+    const q = navigator.requestMIDIAccess(), st = settled(q);
+    await noticeShown();
+    await sleep(600);
+    await harness('unloadBackground');
+    eq(await harness('badge'), '', '(the badge went with it)');
+    await harness('noticeClick', { button: 'Allow' });
+    await sleep(300);
+    eq(st(), 'pending', 'the lost question grants nothing');
+    eq(await harness('badge'), '1', 'asked again');
+    await sleep(600);
+    await harness('noticeClick', { button: 'Allow' });
+    await within(q, 5000, 'the MIDIAccess');
+    eq(JSON.parse(await harness('grants'))[location.origin].midi, 'granted');
+    await harness('grants', { set: '{}' });
+  });
+  await test('Not now on a question the background has lost refuses the request', async () => {
+    const q = navigator.requestMIDIAccess();
+    await noticeShown();
+    await harness('unloadBackground');
+    await harness('noticeClick');
+    await within(rejects(q, 'NotAllowedError'), 3000, 'the refusal');
+    eq(await harness('notice'), null, 'no new notice');
+  });
   // What a page can do to make a click on the notice's Allow one the person
   // did not mean: make it invisible, or draw over it and let the click
   // through.  None of it grants; the click opens the popup instead.
@@ -244,6 +275,8 @@ function loopOf(access) {
   let a = null, b = null;
   await test('Allow in the popup resolves a MIDIAccess without sysex', async () => {
     p = navigator.requestMIDIAccess();
+    await noticeShown();
+    await harness('toolbarClick');
     await harness('question');
     await answer('#askAllow');
     a = await within(p, 5000, 'the MIDIAccess');
@@ -275,16 +308,16 @@ function loopOf(access) {
   });
   await test('asking for sysex asks again, in stronger words, and the notice cannot say yes', async () => {
     p = navigator.requestMIDIAccess({ sysex: true });
-    const q = await harness('question');
-    assert(q && /control and reprogram/.test(q) && /settings and firmware/.test(q), q);
-    const n = await harness('notice');
-    eq(n.buttons.join(), 'Not now,Allow\u2026');
+    const n = await noticeShown();
+    eq(n.buttons.join(), 'Not now,Allow…');
     await sleep(600);
     const opens = (await harness('opens')).popup;
-    await harness('noticeClick', { button: 'Allow\u2026' });
+    await harness('noticeClick', { button: 'Allow…' });
     await sleep(300);
-    eq((await harness('opens')).popup, opens + 1, 'its Allow\u2026 opens the popup');
+    eq((await harness('opens')).popup, opens + 1, 'its Allow… opens the popup');
     eq(JSON.parse(await harness('grants'))[location.origin].sysex, undefined, 'and grants nothing');
+    const q = await harness('question');
+    assert(q && /control and reprogram/.test(q) && /settings and firmware/.test(q), q);
     await answer('#askAllow');
     b = await within(p, 5000, 'the MIDIAccess');
     eq(b.sysexEnabled, true);

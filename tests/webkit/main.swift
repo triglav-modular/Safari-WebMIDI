@@ -192,6 +192,9 @@ final class Harness: NSObject, WKScriptMessageHandlerWithReply, WKScriptMessageH
     // Popups and windows opened; with the toolbar's button hidden, openPopup
     // succeeds and opens nothing (what Safari does then is not known).
     var popupOpens = 0, windowOpens = 0, toolbarHidden = false
+    // A background unloaded and loaded again keeps only its storage.
+    var carriedStore: String? = nil
+    var afterBackgroundLoad: (() -> Void)? = nil
 
     func nextNative() {
         guard !nativeBusy, !nativeQueue.isEmpty else { return }
@@ -298,6 +301,13 @@ final class Harness: NSObject, WKScriptMessageHandlerWithReply, WKScriptMessageH
     }
 
     func webView(_ w: WKWebView, didFinish n: WKNavigation!) {
+        if w === background, backgroundReady, let store = carriedStore {
+            carriedStore = nil
+            background.callAsyncJavaScript("__store = JSON.parse(s); return true", arguments: ["s": store], in: nil, in: .page) { _ in
+                self.afterBackgroundLoad?()
+                self.afterBackgroundLoad = nil
+            }
+        }
         if w === background && !backgroundReady {
             backgroundReady = true
             background.callAsyncJavaScript("__store.grants = JSON.parse(g); return true", arguments: ["g": seedGrants],
@@ -449,6 +459,18 @@ final class Harness: NSObject, WKScriptMessageHandlerWithReply, WKScriptMessageH
             // As the popup's Reset does: through setGrant, which tells the pages.
             background.callAsyncJavaScript("for (const k of ['midi', 'sysex', 'dismissed', 'embargo']) await setGrant(o, k, null); return true",
                                            arguments: ["o": a["origin"] as? String ?? ""], in: nil, in: .page) { r in reply(try? r.get(), nil) }
+        case "unloadBackground":
+            // As Safari unloads an idle background: what it held in memory
+            // goes, its storage stays, and a reply it owed is never sent.
+            background.callAsyncJavaScript("return JSON.stringify(__store)", arguments: [:], in: nil, in: .page) { r in
+                self.carriedStore = ((try? r.get()) as? String) ?? "{}"
+                self.afterBackgroundLoad = { reply(true, nil) }
+                self.background.loadHTMLString("<!doctype html><title>background</title>", baseURL: URL(string: "https://background.invalid/"))
+            }
+        case "toolbarClick":
+            // The person opens the popup from the toolbar's button.
+            popup.loadFileURL(URL(fileURLWithPath: extDir + "/popup.html"), allowingReadAccessTo: URL(fileURLWithPath: extDir))
+            reply(true, nil)
         case "opens":
             if let h = a["toolbarHidden"] as? Bool { toolbarHidden = h }
             reply(["popup": popupOpens, "window": windowOpens], nil)
