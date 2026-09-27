@@ -121,11 +121,14 @@ function originOf(sender, doc) {
 }
 
 // --- asking the person -------------------------------------------------------
-// The question is asked in the extension's own toolbar popup, never in the
-// page: a page can restyle, hide or cover anything drawn in its own DOM, so a
-// prompt there proved only that someone clicked, not what they saw.  A
-// pending question puts a badge on the button and opens the popup; the page
-// shows a notice pointing at the button, which can say no but never yes.
+// The question is asked in the extension's own toolbar popup, where the page
+// cannot reach it, and in a notice in the page (content.js).  A page can
+// restyle, hide or cover anything drawn in its own DOM, so a click on the
+// notice proves less than one in the popup: the notice can say no, and yes
+// only to basic MIDI, never to sysex, which can rewrite a device's settings
+// and firmware.  A pending question puts a badge on the button and opens the
+// popup; the notice's Allow… opens it again, or where Safari's toolbar has no
+// Web MIDI button, the same question in a window of the extension's own.
 //
 // Each question has an id of its own, and an answer counts only for the
 // question it names: the popup's Allow once carried just the tab, and a
@@ -134,7 +137,7 @@ function originOf(sender, doc) {
 // the question changes, and redraws.  A question goes when every document
 // that asked it has gone, or the tab leaves the site it names, and that
 // decides nothing.
-var pending = new Map();     // tabId -> { id, site, origin, sysex, incognito, askers, answer, resolve }
+var pending = new Map();     // tabId -> { id, site, origin, sysex, incognito, askers, answer, resolve, window }
 var asked = 0;
 function askUser(tabId, from, sysex, client) {
     var p = pending.get(tabId);
@@ -148,6 +151,9 @@ function askUser(tabId, from, sysex, client) {
     entry.resolve = function (answer) {
         if (pending.get(tabId) !== entry) return;
         pending.delete(tabId);
+        if (typeof entry.window === 'number') {
+            Promise.resolve().then(function () { return browser.windows.remove(entry.window); }).catch(function () {});
+        }
         showBadge(tabId, false);
         browser.tabs.sendMessage(tabId, { type: 'notice', show: false }, { frameId: 0 }).catch(function () {});
         questionChanged(tabId);
@@ -160,6 +166,43 @@ function askUser(tabId, from, sysex, client) {
     questionChanged(tabId);
     Promise.resolve().then(function () { return browser.action.openPopup(); }).catch(function () {});
     return entry.answer;
+}
+// The question where the page cannot reach it: the toolbar popup, or where
+// Safari's toolbar has no Web MIDI button to open it from, a window of the
+// extension's own asking the same question, which goes with the question.
+// A popup asks for the question as it opens (popup.js); none asking within
+// POPUP_WAIT ms means none opened, whether openPopup failed or said nothing.
+var POPUP_WAIT = 1000, popupOpened = 0;
+function openQuestion(tabId, entry) {
+    var since = Date.now();
+    return Promise.resolve().then(function () { return browser.action.openPopup(); }).then(function () {
+        return new Promise(function (r) { setTimeout(r, POPUP_WAIT); });
+    }, function () {}).then(function () {
+        if (popupOpened >= since || pending.get(tabId) !== entry) return undefined;
+        return questionWindow(tabId, entry);
+    }).catch(function () {});
+}
+function questionWindow(tabId, entry) {
+    function create() {
+        entry.window = null;
+        return browser.windows.create({ url: browser.runtime.getURL('popup.html?tab=' + tabId), type: 'popup', width: 320, height: 260 })
+            .then(function (w) {
+                if (pending.get(tabId) === entry) entry.window = w.id;
+                else return browser.windows.remove(w.id);
+            });
+    }
+    if (entry.window === null) return Promise.resolve();       // on its way
+    if (entry.window === undefined) return create();
+    return browser.windows.update(entry.window, { focused: true }).then(function () {}, create);
+}
+// The question the page's notice showed, if it is still the one asked, and
+// the notice is the tab's top document, on the site the question names.
+function noticeQuestion(sender, id) {
+    if (!sender.tab || sender.frameId) return null;
+    var n = pending.get(sender.tab.id);
+    if (!n || n.id !== id) return null;
+    try { if (new URL(sender.url).origin !== n.origin) return null; } catch (e) { return null; }
+    return n;
 }
 // To the popup, if it is open.
 function questionChanged(tabId) {
@@ -385,10 +428,16 @@ browser.runtime.onMessage.addListener(function (msg, sender) {
     case 'permission': return permissionState(sender, !!msg.sysex, msg.doc);
     case 'policy-self': return policyOf(sender, msg.doc);
     case 'gone': gone(sender, msg.doc); return Promise.resolve(true);
-    // The page's notice can say no, never yes, and only to the question it showed.
-    case 'notice-dismissed': {
-        var n = sender.tab && !sender.frameId ? pending.get(sender.tab.id) : null;
-        if (n && n.id === msg.id) n.resolve('dismiss');
+    // The page's notice, only to the question it showed: it can say no, yes
+    // only to basic MIDI, and otherwise open the question out of its reach.
+    case 'notice-dismissed':
+    case 'notice-allow':
+    case 'notice-open': {
+        var n = noticeQuestion(sender, msg.id);
+        if (!n) return Promise.resolve(false);
+        if (msg.type === 'notice-dismissed') n.resolve('dismiss');
+        else if (msg.type === 'notice-allow' && !n.sysex) n.resolve('allow');
+        else openQuestion(sender.tab.id, n);
         return Promise.resolve(true);
     }
     }
@@ -397,6 +446,7 @@ browser.runtime.onMessage.addListener(function (msg, sender) {
     switch (msg.type) {
     case 'grants': return grants(!!msg.incognito);
     case 'pending': {
+        if (msg.opened) popupOpened = Date.now();
         var p = pending.get(msg.tabId);
         return Promise.resolve(p ? { id: p.id, site: p.site, origin: p.origin, sysex: p.sysex } : null);
     }

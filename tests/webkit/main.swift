@@ -108,6 +108,12 @@ var browser = {
     openPopup: function () { return window.webkit.messageHandlers.openPopup.postMessage({}); },
     setBadgeText: function (o) { __badge = o.text; },
     setBadgeBackgroundColor: function () {}
+  },
+  // A window of the extension's own: a web view beside the popup's.
+  windows: {
+    create: function (o) { return window.webkit.messageHandlers.openWindow.postMessage(o); },
+    update: function () { return Promise.resolve({}); },
+    remove: function () { return Promise.resolve(); }
   }
 };
 var __badge = '';
@@ -154,7 +160,10 @@ var browser = {
     sendMessage: function (m) { return window.webkit.messageHandlers.popupToBg.postMessage(m); },
     onMessage: { addListener: function (fn) { __popupListeners.push(fn); } }
   },
-  tabs: { query: function () { return window.webkit.messageHandlers.popupTabs.postMessage({}); } }
+  tabs: {
+    query: function () { return window.webkit.messageHandlers.popupTabs.postMessage({}); },
+    get: function () { return window.webkit.messageHandlers.popupTabs.postMessage({}).then(function (t) { return t[0]; }); }
+  }
 };
 function __popupDeliver(msg) { __popupListeners.forEach(function (fn) { fn(msg, { url: 'webmidi-ext://ext/background' }); }); return true; }
 """
@@ -166,6 +175,8 @@ final class Harness: NSObject, WKScriptMessageHandlerWithReply, WKScriptMessageH
     var backgroundReady = false
     var popup: WKWebView!
     var popupWindow: NSWindow!
+    var extWindow: WKWebView!
+    var extWindowWindow: NSWindow!
     // Frames that have spoken, so a message for the whole tab reaches them all.
     var frames: [Int: WKFrameInfo] = [:]
     var nativeQueue: [([String: Any], (Any?, String?) -> Void)] = []
@@ -178,6 +189,9 @@ final class Harness: NSObject, WKScriptMessageHandlerWithReply, WKScriptMessageH
     var held: [Date] = []
     var refusals = 0, peak = 0, refuseNext = 0, sendFailures = 0
     var lastStarted = "(none)"
+    // Popups and windows opened; with the toolbar's button hidden, openPopup
+    // succeeds and opens nothing (what Safari does then is not known).
+    var popupOpens = 0, windowOpens = 0, toolbarHidden = false
 
     func nextNative() {
         guard !nativeBusy, !nativeQueue.isEmpty else { return }
@@ -215,6 +229,7 @@ final class Harness: NSObject, WKScriptMessageHandlerWithReply, WKScriptMessageH
         bcfg.userContentController.addScriptMessageHandler(self, contentWorld: .page, name: "native")
         bcfg.userContentController.addScriptMessageHandler(self, contentWorld: .page, name: "toTab")
         bcfg.userContentController.addScriptMessageHandler(self, contentWorld: .page, name: "openPopup")
+        bcfg.userContentController.addScriptMessageHandler(self, contentWorld: .page, name: "openWindow")
         bcfg.userContentController.addScriptMessageHandler(self, contentWorld: .page, name: "toPopup")
 
         let pcfg = WKWebViewConfiguration()
@@ -223,6 +238,8 @@ final class Harness: NSObject, WKScriptMessageHandlerWithReply, WKScriptMessageH
         pcfg.userContentController.addScriptMessageHandler(self, contentWorld: .page, name: "popupTabs")
         popup = WKWebView(frame: NSRect(x: 0, y: 0, width: 320, height: 320), configuration: pcfg)
         popupWindow = offscreenWindow(for: popup, x: -4000)
+        extWindow = WKWebView(frame: NSRect(x: 0, y: 0, width: 320, height: 320), configuration: pcfg)
+        extWindowWindow = offscreenWindow(for: extWindow, x: -5000)
         background = WKWebView(frame: .zero, configuration: bcfg)
         background.navigationDelegate = self
         background.loadHTMLString("<!doctype html><title>background</title>", baseURL: URL(string: "https://background.invalid/"))
@@ -248,13 +265,15 @@ final class Harness: NSObject, WKScriptMessageHandlerWithReply, WKScriptMessageH
     // Runs a script in the popup, again if the popup reloaded under it:
     // openPopup loads it afresh, as Safari opens a fresh popup, and a script
     // caught in that navigation ends without an answer.
-    func popupEval(_ js: String, _ args: [String: Any], attempts: Int = 10, _ done: @escaping (Any?) -> Void) {
-        popup.callAsyncJavaScript(js, arguments: args, in: nil, in: .page) { r in
+    // `view` is the popup's, or the extension's window's.
+    func popupEval(_ js: String, _ args: [String: Any], attempts: Int = 10, in view: WKWebView? = nil,
+                   _ done: @escaping (Any?) -> Void) {
+        (view ?? popup).callAsyncJavaScript(js, arguments: args, in: nil, in: .page) { r in
             switch r {
             case .success(let v) where !(v is NSNull) && v != nil: done(v)
             default:
                 if attempts <= 1 { done(nil); return }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { self.popupEval(js, args, attempts: attempts - 1, done) }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { self.popupEval(js, args, attempts: attempts - 1, in: view, done) }
             }
         }
     }
@@ -337,15 +356,27 @@ final class Harness: NSObject, WKScriptMessageHandlerWithReply, WKScriptMessageH
                 }
             }
         case "toPopup":
-            // runtime.sendMessage from the background reaches the popup if it is open.
+            // runtime.sendMessage from the background reaches the popup if it
+            // is open, and the extension's window.
+            extWindow.callAsyncJavaScript("return typeof __popupDeliver === 'function' ? __popupDeliver(msg) : null",
+                                          arguments: ["msg": m.body], in: nil, in: .page) { _ in }
             popup.callAsyncJavaScript("return typeof __popupDeliver === 'function' ? __popupDeliver(msg) : null",
                                       arguments: ["msg": m.body], in: nil, in: .page) { r in
                 if case .success(let v) = r, v != nil, !(v is NSNull) { replyHandler(v, nil) }
                 else { replyHandler(nil, "Could not establish connection. Receiving end does not exist.") }
             }
         case "openPopup":
-            popup.loadFileURL(URL(fileURLWithPath: extDir + "/popup.html"), allowingReadAccessTo: URL(fileURLWithPath: extDir))
+            if !toolbarHidden {
+                popupOpens += 1
+                popup.loadFileURL(URL(fileURLWithPath: extDir + "/popup.html"), allowingReadAccessTo: URL(fileURLWithPath: extDir))
+            }
             replyHandler(true, nil)
+        case "openWindow":
+            windowOpens += 1
+            var c = URLComponents(url: URL(fileURLWithPath: extDir + "/popup.html"), resolvingAgainstBaseURL: false)!
+            c.query = URL(string: (m.body as? [String: Any])?["url"] as? String ?? "")?.query
+            extWindow.loadFileURL(c.url!, allowingReadAccessTo: URL(fileURLWithPath: extDir))
+            replyHandler(["id": windowOpens], nil)
         case "popupToBg":
             background.callAsyncJavaScript("return await __deliver(msg, sender)",
                                            arguments: ["msg": m.body, "sender": ["url": "webmidi-ext://ext/popup.html"]],
@@ -418,10 +449,15 @@ final class Harness: NSObject, WKScriptMessageHandlerWithReply, WKScriptMessageH
             // As the popup's Reset does: through setGrant, which tells the pages.
             background.callAsyncJavaScript("for (const k of ['midi', 'sysex', 'dismissed', 'embargo']) await setGrant(o, k, null); return true",
                                            arguments: ["o": a["origin"] as? String ?? ""], in: nil, in: .page) { r in reply(try? r.get(), nil) }
+        case "opens":
+            if let h = a["toolbarHidden"] as? Bool { toolbarHidden = h }
+            reply(["popup": popupOpens, "window": windowOpens], nil)
         case "badge":
             background.callAsyncJavaScript("return __badge", arguments: [:], in: nil, in: .page) { r in reply(try? r.get(), nil) }
         case "question":
-            // What the toolbar popup asks, once it has drawn; null if nothing.
+            // What the toolbar popup (or with in: "window", the extension's
+            // window) asks, once it has drawn; null if nothing.
+            let view: WKWebView = a["in"] as? String == "window" ? extWindow : popup
             popupEval("""
                 for (let i = 0; i < 20; i++) {
                     const a = document.getElementById('ask'), q = document.getElementById('askQuestion');
@@ -429,11 +465,12 @@ final class Harness: NSObject, WKScriptMessageHandlerWithReply, WKScriptMessageH
                     await new Promise(r => setTimeout(r, 50));
                 }
                 return null;
-                """, [:], attempts: a["expect"] as? Bool == false ? 1 : 10) { v in reply(v ?? NSNull(), nil) }
+                """, [:], attempts: a["expect"] as? Bool == false ? 1 : 10, in: view) { v in reply(v ?? NSNull(), nil) }
         case "decide":
             // A real click on the popup's Allow or Don't Allow, once it takes
             // clicks (a question just shown waits half a second).
             let sel = a["selector"] as? String ?? "#askAllow"
+            let view: WKWebView = a["in"] as? String == "window" ? extWindow : popup
             popupEval("""
                 for (let i = 0; i < 40; i++) {
                     const b = document.querySelector(sel), a = document.getElementById('ask');
@@ -444,9 +481,9 @@ final class Harness: NSObject, WKScriptMessageHandlerWithReply, WKScriptMessageH
                     await new Promise(r => setTimeout(r, 50));
                 }
                 return null;
-                """, ["sel": sel]) { v in
+                """, ["sel": sel], in: view) { v in
                 guard let p = v as? [Double] else { reply(false, nil); return }
-                self.mouseClick(in: self.popup, window: self.popupWindow, x: p[0], y: p[1])
+                self.mouseClick(in: view, window: view.window!, x: p[0], y: p[1])
                 reply(true, nil)
             }
         case "notice":
@@ -454,25 +491,25 @@ final class Harness: NSObject, WKScriptMessageHandlerWithReply, WKScriptMessageH
             page.callAsyncJavaScript("""
                 const r = [...__roots].reverse().find(x => x.host && x.host.isConnected && x.host.localName === 'webmidi-notice');
                 if (!r) return null;
-                return { text: r.querySelector('.wrap').textContent, buttons: [...r.querySelectorAll('button')].map(b => b.textContent) };
+                return { text: r.querySelector('.wrap').textContent, buttons: [...r.querySelectorAll('button')].map(b => b.textContent),
+                         disabled: [...r.querySelectorAll('button')].map(b => b.disabled) };
                 """, arguments: [:], in: nil, in: contentWorld) { r in reply((try? r.get()) ?? NSNull(), nil) }
         case "untrustedClick":
             page.callAsyncJavaScript("""
                 const r = [...__roots].reverse().find(x => x.host && x.host.isConnected && x.host.localName === 'webmidi-notice');
-                const b = r && r.querySelector('button');
-                if (!b) return false;
-                b.click();
-                b.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-                return true;
+                const bs = r ? [...r.querySelectorAll('button')] : [];
+                for (const b of bs) { b.click(); b.dispatchEvent(new MouseEvent('click', { bubbles: true })); }
+                return bs.length > 0;
                 """, arguments: [:], in: nil, in: contentWorld) { r in reply(try? r.get(), nil) }
         case "noticeClick":
+            // A real click on the notice's button named `button` (Not now if none).
             page.callAsyncJavaScript("""
                 const r = [...__roots].reverse().find(x => x.host && x.host.isConnected && x.host.localName === 'webmidi-notice');
-                const b = r && r.querySelector('button');
+                const b = r && [...r.querySelectorAll('button')].find(b => b.textContent === name);
                 if (!b) return null;
                 const rc = b.getBoundingClientRect();
                 return [rc.x + rc.width / 2, rc.y + rc.height / 2];
-                """, arguments: [:], in: nil, in: contentWorld) { r in
+                """, arguments: ["name": a["button"] as? String ?? "Not now"], in: nil, in: contentWorld) { r in
                 guard let p = (try? r.get()) as? [Double] else { reply(false, nil); return }
                 self.mouseClick(in: self.page, window: self.window, x: p[0], y: p[1])
                 reply(true, nil)

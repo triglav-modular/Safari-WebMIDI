@@ -30,15 +30,24 @@ function within(p, ms, what) {
 // is gone (the badge clears when it is answered): on a slow CI runner a
 // click could land before the popup was ready, and the request then waited
 // forever (2 of 4 runs, 2026-09-26).
-async function answer(selector) {
+async function answer(selector, where) {
   for (let i = 0; i < 5; i++) {
-    await harness('decide', { selector });
+    await harness('decide', { selector, in: where });
     for (let k = 0; k < 20; k++) {
       if (await harness('badge') !== '1') return;
       await sleep(50);
     }
   }
   throw new Error('the popup did not take ' + selector);
+}
+// The notice, once the page shows it.
+async function noticeShown() {
+  for (let i = 0; i < 40; i++) {
+    const n = await harness('notice');
+    if (n) return n;
+    await sleep(25);
+  }
+  throw new Error('no notice');
 }
 function settled(p) { let s = 'pending'; p.then(() => { s = 'fulfilled'; }, () => { s = 'rejected'; }); return () => s; }
 async function rejects(p, name) {
@@ -110,7 +119,8 @@ function loopOf(access) {
     assert(r !== 'ours', r);
   });
   // The question is asked in the toolbar popup, where the page cannot reach
-  // it; the page shows only a notice pointing there, which can say no.
+  // it, and in a notice in the page, which can say no, and yes only to
+  // basic MIDI when it can be seen as it was drawn.
   let p = navigator.requestMIDIAccess();
   const state1 = settled(p);
   await test('a first request asks in the toolbar popup, with a badge', async () => {
@@ -118,10 +128,10 @@ function loopOf(access) {
     assert(q && /Allow \u201c.*\u201d to use your MIDI devices\?/.test(q), q);
     eq(await harness('badge'), '1');
   });
-  await test('the page shows a notice pointing there, with no Allow', async () => {
+  await test('the page shows a notice too, with Not now and Allow', async () => {
     const n = await harness('notice');
-    assert(n && /Answer with the Web MIDI button/.test(n.text), n && n.text);
-    eq(n.buttons.join(), 'Not now');
+    assert(n && /is asking to use your MIDI devices/.test(n.text), n && n.text);
+    eq(n.buttons.join(), 'Not now,Allow');
   });
   await test('no click in the page can answer yes', async () => {
     await harness('untrustedClick');
@@ -173,6 +183,64 @@ function loopOf(access) {
     await harness('grants', { set: '{}' });
   });
 
+  await test('the notice\u2019s Allow takes no click for half a second, then grants basic MIDI', async () => {
+    const q = navigator.requestMIDIAccess(), st = settled(q);
+    const n = await noticeShown();
+    eq(n.disabled.join(), 'false,true');
+    await harness('noticeClick', { button: 'Allow' });
+    await sleep(300);
+    eq(st(), 'pending', 'a click at once');
+    await sleep(300);
+    await harness('noticeClick', { button: 'Allow' });
+    const acc = await within(q, 5000, 'the MIDIAccess');
+    eq(acc.sysexEnabled, false);
+    eq(JSON.parse(await harness('grants'))[location.origin].midi, 'granted');
+    eq(await harness('notice'), null, 'the notice goes');
+    eq(await harness('badge'), '', 'the badge goes');
+    await harness('grants', { set: '{}' });
+  });
+  // What a page can do to make a click on the notice's Allow one the person
+  // did not mean: make it invisible, or draw over it and let the click
+  // through.  None of it grants; the click opens the popup instead.
+  const covers = {
+    'made nearly transparent': () => {
+      const h = document.querySelector('webmidi-notice');
+      h.style.opacity = '0.01';
+      return () => {};
+    },
+    'drawn over from its own ::after': () => {
+      const st = document.createElement('style');
+      st.textContent = 'webmidi-notice::after { content: ""; position: fixed; inset: 0; background: #fff; pointer-events: none }';
+      document.head.append(st);
+      return () => st.remove();
+    },
+    'covered by a popover of the page\u2019s': () => {
+      const d = document.createElement('div');
+      d.popover = 'manual';
+      d.style.cssText = 'inset: 0; width: 100vw; height: 100vh; margin: 0; border: 0; background: #fff; pointer-events: none';
+      document.body.append(d);
+      d.showPopover();
+      return () => d.remove();
+    }
+  };
+  for (const [how, cover] of Object.entries(covers)) {
+    await test('a notice ' + how + ' cannot say yes; its Allow opens the popup', async () => {
+      const q = navigator.requestMIDIAccess(), st = settled(q);
+      await noticeShown();
+      const undo = cover();
+      await sleep(600);
+      const opens = (await harness('opens')).popup;
+      await harness('noticeClick', { button: 'Allow' });
+      await sleep(300);
+      eq(st(), 'pending');
+      eq((await harness('opens')).popup, opens + 1, 'the popup opened');
+      undo();
+      await answer('#askBlock');
+      await rejects(q, 'NotAllowedError');
+      await harness('grants', { set: '{}' });
+    });
+  }
+
   let a = null, b = null;
   await test('Allow in the popup resolves a MIDIAccess without sysex', async () => {
     p = navigator.requestMIDIAccess();
@@ -186,10 +254,37 @@ function loopOf(access) {
     eq((await navigator.permissions.query({ name: 'midi' })).state, 'granted');
     eq((await navigator.permissions.query({ name: 'midi', sysex: true })).state, 'prompt');
   });
-  await test('asking for sysex asks again, in stronger words', async () => {
+  await test('with no Web MIDI button in the toolbar, Allow\u2026 asks in a window of the extension\u2019s own', async () => {
+    await harness('opens', { toolbarHidden: true });
+    try {
+      const q = navigator.requestMIDIAccess({ sysex: true });
+      await noticeShown();
+      const before = await harness('opens');
+      await harness('noticeClick', { button: 'Allow\u2026' });
+      await sleep(1500);
+      const after = await harness('opens');
+      eq(after.window, before.window + 1, 'a window opened');
+      const w = await harness('question', { in: 'window' });
+      assert(w && /control and reprogram/.test(w), w);
+      await answer('#askBlock', 'window');
+      await rejects(q, 'NotAllowedError');
+    } finally {
+      await harness('opens', { toolbarHidden: false });
+      await harness('grants', { set: JSON.stringify({ [location.origin]: { midi: 'granted' } }) });
+    }
+  });
+  await test('asking for sysex asks again, in stronger words, and the notice cannot say yes', async () => {
     p = navigator.requestMIDIAccess({ sysex: true });
     const q = await harness('question');
     assert(q && /control and reprogram/.test(q) && /settings and firmware/.test(q), q);
+    const n = await harness('notice');
+    eq(n.buttons.join(), 'Not now,Allow\u2026');
+    await sleep(600);
+    const opens = (await harness('opens')).popup;
+    await harness('noticeClick', { button: 'Allow\u2026' });
+    await sleep(300);
+    eq((await harness('opens')).popup, opens + 1, 'its Allow\u2026 opens the popup');
+    eq(JSON.parse(await harness('grants'))[location.origin].sysex, undefined, 'and grants nothing');
     await answer('#askAllow');
     b = await within(p, 5000, 'the MIDIAccess');
     eq(b.sysexEnabled, true);

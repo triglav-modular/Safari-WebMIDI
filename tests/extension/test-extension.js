@@ -33,7 +33,8 @@ const PORTS = () => ({ gen: 'g', inputs: [], outputs: [] });
 // sendNativeMessage; `policy(msg)` answers a frame policy question.
 function background(o = {}) {
     let listener;
-    const b = { store: { grants: o.grants || {} }, toPopup: [], toTab: [], onUpdated: [], nativeCalls: 0, popup: null, drop: false };
+    const b = { store: { grants: o.grants || {} }, toPopup: [], toTab: [], onUpdated: [], nativeCalls: 0, popup: null, drop: false,
+                popupOpens: 0, windows: [], removed: [] };
     const browser = {
         runtime: {
             onMessage: { addListener(fn) { listener = fn; } },
@@ -55,7 +56,14 @@ function background(o = {}) {
             onRemoved: { addListener() {} },
             onUpdated: { addListener(fn) { b.onUpdated.push(fn); } }
         },
-        action: { openPopup: async () => {}, setBadgeText() {}, setBadgeBackgroundColor() {} }
+        // openPopup does what `o.openPopup` says: by default nothing, as if
+        // the popup opened and asked nothing.
+        action: { openPopup: async () => { b.popupOpens++; if (o.openPopup) return o.openPopup(b); }, setBadgeText() {}, setBadgeBackgroundColor() {} },
+        windows: {
+            create: async w => { b.windows.push(w); return { id: 100 + b.windows.length }; },
+            update: async id => { if (b.removed.includes(id)) throw new Error('No window with id: ' + id); },
+            remove: async id => { b.removed.push(id); }
+        }
     };
     vm.runInNewContext(read('background.js'), { browser, URL, Date, setTimeout, clearTimeout });
     b.call = (msg, sender = page) => Promise.resolve(listener(msg, sender));
@@ -63,8 +71,9 @@ function background(o = {}) {
     return b;
 }
 
-// The real popup.js, with just enough DOM, wired to a background.
-function popup(b) {
+// The real popup.js, with just enough DOM, wired to a background; `search`
+// is its address's query, as the window of its own has one.
+function popup(b, search = '') {
     const els = {}, listeners = [];
     class El {
         constructor() { this.hidden = false; this.textContent = ''; this.disabled = false; this.onclick = null; }
@@ -73,10 +82,13 @@ function popup(b) {
     const document = { getElementById: id => els[id] || (els[id] = new El()), createElement: () => new El() };
     const browser = {
         runtime: { sendMessage: msg => b.call(msg, POPUP), onMessage: { addListener(fn) { listeners.push(fn); } } },
-        tabs: { query: async () => [{ id: 1, url: SITE + '/', incognito: false }] }
+        tabs: {
+            query: async () => [{ id: 1, url: SITE + '/', incognito: false }],
+            get: async id => ({ id, url: SITE + '/', incognito: false })
+        }
     };
     b.popup = msg => { listeners.forEach(fn => fn(msg)); };
-    vm.runInNewContext(read('popup.js'), { browser, document, setTimeout, clearTimeout, Date, URL });
+    vm.runInNewContext(read('popup.js'), { browser, document, setTimeout, clearTimeout, Date, URL, URLSearchParams, location: { search } });
     return els;
 }
 
@@ -209,6 +221,80 @@ function content(secure) {
         const els3 = popup(background({ grants: { [SITE]: { dismissed: 1 } } }));
         await sleep(50);
         check('a site dismissed is not said to have not asked', !els3.here.hidden && /^Asked/.test(line(els3)), line(els3));
+    });
+
+    await section('the notice', async () => {
+        // The page's notice: yes to basic MIDI for the question it showed,
+        // from the tab's top document on that site only; for sysex it only
+        // opens the question out of the page's reach.
+        const b = background();
+        const basic = b.call({ type: 'request', doc: 'd1' });
+        await turn();
+        const shown = await b.pending();
+        const frame = { url: SITE + '/frame', frameId: 7, tab: page.tab };
+        const elsewhere = { url: 'https://elsewhere.example/', frameId: 0, tab: page.tab };
+        const refused = [
+            await b.call({ type: 'notice-allow', id: shown.id, doc: 'f' }, frame),
+            await b.call({ type: 'notice-allow', id: shown.id, doc: 'e' }, elsewhere),
+            await b.call({ type: 'notice-allow', id: 'another', doc: 'd1' })
+        ];
+        check('Allow from a frame, another site, or for another question is refused', refused.every(r => r === false), refused);
+        check('and grants nothing', !b.store.grants[SITE] && (await b.pending()) !== null, b.store.grants);
+        const taken = await b.call({ type: 'notice-allow', id: shown.id, doc: 'd1' });
+        check('Allow for the basic question on show answers it', taken === true && (await basic).ok === true &&
+              b.store.grants[SITE].midi === 'granted' && (await b.pending()) === null, b.store.grants);
+
+        const sysex = b.call({ type: 'request', sysex: true, doc: 'd1' });
+        await turn();
+        const asked = await b.pending();
+        const opens = b.popupOpens;
+        await b.call({ type: 'notice-allow', id: asked.id, doc: 'd1' });
+        await turn();
+        check('Allow for a sysex question grants nothing', !b.store.grants[SITE].sysex && (await b.pending()).id === asked.id, b.store.grants);
+        check('and opens the popup instead', b.popupOpens === opens + 1, b.popupOpens);
+        b.call({ type: 'pending', tabId: 1, opened: true }, POPUP);    // the popup opens
+        await sleep(1100);
+        check('a popup that opened gets no window beside it', b.windows.length === 0, b.windows);
+        await b.call({ type: 'decide', tabId: 1, id: asked.id, answer: 'block' }, POPUP);
+        await sysex;
+    });
+    await section('no toolbar button', async () => {
+        // Where no popup opens, whether openPopup says so or not, the question
+        // opens in a window of the extension's own, which goes with it.
+        const b = background();
+        const q = b.call({ type: 'request', sysex: true, doc: 'd1' });
+        await turn();
+        const asked = await b.pending();
+        await b.call({ type: 'notice-open', id: asked.id, doc: 'd1' });
+        await sleep(300);
+        check('(no window while a popup may still open)', b.windows.length === 0, b.windows);
+        await sleep(900);
+        const w = b.windows[0];
+        check('a popup that never asked gets a window with the question', b.windows.length === 1 &&
+              w.url === 'safari-web-extension://ext/popup.html?tab=1' && w.type === 'popup', b.windows);
+        await b.call({ type: 'notice-open', id: asked.id, doc: 'd1' });
+        await sleep(1100);
+        check('Allow… again brings that window forward, not a second', b.windows.length === 1, b.windows);
+
+        const els = popup(b, '?tab=1');
+        await sleep(50);
+        check('the window asks the question of the tab its address names', !els.ask.hidden &&
+              /control and reprogram/.test(els.askQuestion.textContent), els.askQuestion.textContent);
+        await sleep(500);
+        els.askAllow.onclick();
+        await sleep(50);
+        check('its Allow answers it', (await q).ok === true && b.store.grants[SITE].sysex === 'granted', b.store.grants);
+        check('and the window goes with the question', b.removed.includes(101), b.removed);
+
+        const failing = background({ openPopup: async () => { throw new Error('No toolbar item'); } });
+        failing.call({ type: 'request', doc: 'd1' });
+        await turn();
+        await failing.call({ type: 'notice-open', id: (await failing.pending()).id, doc: 'd1' });
+        await sleep(50);
+        check('where openPopup fails, the window opens at once', failing.windows.length === 1, failing.windows);
+        failing.onUpdated.forEach(fn => fn(1, { url: 'https://elsewhere.example/' }));
+        await turn();
+        check('and goes when the question does', failing.removed.includes(101), failing.removed);
     });
 
     // --- 2. insecure documents get nothing ------------------------------------------

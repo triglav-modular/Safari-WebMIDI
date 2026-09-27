@@ -35,10 +35,14 @@ function stateOf(o) {
 // opened, cannot answer it.
 var READY_AFTER = 500;
 var shownTab = null, shownId = null, readyAt = 0, readyTimer = null;
+// The first ask tells the background a popup has opened (background.js).
+var opened = true;
 function ask(tab) {
     if (!tab) return Promise.resolve();
     shownTab = tab;
-    return browser.runtime.sendMessage({ type: 'pending', tabId: tab.id }).then(function (p) {
+    var first = opened;
+    opened = false;
+    return browser.runtime.sendMessage({ type: 'pending', tabId: tab.id, opened: first }).then(function (p) {
         var box = document.getElementById('ask');
         box.hidden = !p;
         if (!p) { shownId = null; return null; }
@@ -76,9 +80,13 @@ browser.runtime.onMessage.addListener(function (msg) {
 });
 function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text) e.textContent = text; return e; }
 
+// Opened as a window of its own, where Safari's toolbar has no Web MIDI
+// button (background.js), it is about the tab its address names.
+var forTab = Number(new URLSearchParams(location.search).get('tab')) || null;
 var privateTab = false;
 function draw() {
-    browser.tabs.query({ active: true, currentWindow: true }).then(function (tabs) {
+    (forTab ? browser.tabs.get(forTab).then(function (t) { return [t]; })
+        : browser.tabs.query({ active: true, currentWindow: true })).then(function (tabs) {
         var tab = tabs && tabs[0];
         privateTab = !!(tab && tab.incognito);
         return Promise.all([browser.runtime.sendMessage({ type: 'grants', incognito: privateTab }), tab, ask(tab)]);

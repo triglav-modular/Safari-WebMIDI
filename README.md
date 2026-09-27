@@ -42,9 +42,17 @@ page ── shim.js (page world) ──MessageChannel── content.js (isolated
 - **background.js** holds the permission decisions and is the only way to
   CoreMIDI; every request is checked there, as Chrome checks in the browser
   process. The question is asked in the extension's toolbar popup (with a
-  badge on the button), never in the page, which could restyle or hide
-  anything drawn in its own DOM; the page shows only a notice pointing at
-  the button, which can dismiss but not allow. As in Chrome, three
+  badge on the button) and in a notice in the page. A page can restyle,
+  hide or cover anything drawn in its own DOM, so the notice can allow
+  basic MIDI only, and only for a real click at least half a second after it
+  appears, while it sits in the top layer with its own style and nothing
+  else of the page's is there. Otherwise its Allow opens the popup instead.
+  A page can still hide the notice with a top-layer element of its own in a
+  closed shadow root; that is accepted for basic MIDI, not for sysex,
+  which can rewrite a device's settings and firmware. For sysex the
+  notice's Allow… only opens the popup, or, where Safari's toolbar has no
+  Web MIDI button (no popup has asked for the question within a second),
+  the same question in a window of the extension's own. As in Chrome, three
   dismissals block a site for a week. Every question has an id, and an
   answer counts only for the question it names: if the page asks something
   else while the popup is open, the popup redraws, and a question just

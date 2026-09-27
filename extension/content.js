@@ -189,22 +189,40 @@
     }
 
     // --- the notice (top frame only) --------------------------------------------
-    // The question itself is asked in the extension's toolbar popup, where a
-    // page cannot reach it (background.js).  The page gets only this notice,
-    // pointing at the button: it has no Allow, and closing it counts as
-    // dismissing the question.
+    // The question is asked in the extension's toolbar popup, where a page
+    // cannot reach it (background.js), and this notice asks it in the page
+    // too.  A page can restyle, hide or cover what is drawn in its own DOM,
+    // so a click here proves less than one in the popup.  The notice's Allow
+    // is for basic MIDI only, and it takes a click only when:
+    //   - the click is the person's (isTrusted), half a second or more after
+    //     the notice came on show, so a click aimed at the page as the notice
+    //     appeared cannot land on it;
+    //   - the notice is in the top layer, over everything the page draws in
+    //     the ordinary way, whatever its z-index;
+    //   - its element keeps the style it was given, carries no drawing of
+    //     the page's (::before, ::after), and nothing of the page's is in the
+    //     top layer with it (a popover, a modal dialog, fullscreen).
+    // Otherwise the click opens the question where the page cannot reach it.
+    // A page can still hide the notice with a top-layer element of its own
+    // in a closed shadow root.  That is accepted for basic MIDI, and not for
+    // sysex, which can rewrite a device's settings and firmware: a sysex
+    // question's Allow… only opens the popup, or where Safari's toolbar has
+    // no Web MIDI button, a window of the extension's own.  Closing the
+    // notice counts as dismissing the question.
     if (window !== window.top) return;
 
     var TEXT = {
-        midi: '\u201c{site}\u201d is asking to use your MIDI devices.',
-        sysex: '\u201c{site}\u201d is asking to control and reprogram your MIDI devices.',
-        where: 'Answer with the Web MIDI button in Safari\u2019s toolbar.',
+        midi: '“{site}” is asking to use your MIDI devices.',
+        sysex: '“{site}” is asking to control and reprogram your MIDI devices.',
+        sysexDetail: 'This lets the site change your devices’ settings and firmware.',
         close: 'Not now',
+        allow: 'Allow',
+        allowElsewhere: 'Allow…',
         from: 'Web MIDI'
     };
     var ICON = __ICON_DATA_URL__;
     // Safari's Liquid Glass, as near as a page can draw it: a translucent,
-    // blurred and saturated panel with a lit edge, and a capsule button.
+    // blurred and saturated panel with a lit edge, and capsule buttons.
     var CSS = [
         ':host{all:initial}',
         '.wrap{position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:2147483647;',
@@ -218,43 +236,75 @@
         '.from{font-size:11px;font-weight:600;color:rgba(60,60,67,.7);margin:0 0 2px}',
         '.q{font-weight:600;font-size:14px;margin:0;overflow-wrap:anywhere}',
         '.d{margin:4px 0 0;color:rgba(60,60,67,.85)}',
-        '.b{display:flex;justify-content:flex-end;margin-top:12px;grid-column:2}',
+        '.b{display:flex;justify-content:flex-end;gap:8px;margin-top:12px;grid-column:2}',
         'button{font:inherit;font-weight:500;padding:6px 16px;border-radius:999px;border:0;cursor:pointer;',
         'color:#1d1d1f;background:rgba(255,255,255,.55);box-shadow:inset 0 1px 0 rgba(255,255,255,.9),inset 0 0 0 .5px rgba(0,0,0,.12)}',
+        'button.primary{color:#fff;background:#000;box-shadow:none}',
         'button:active{transform:scale(.97)}',
+        'button:disabled{opacity:.45;cursor:default;transform:none}',
         '@media (prefers-color-scheme:dark){.wrap{color:#f5f5f7;background:rgba(40,40,44,.55);border-color:rgba(255,255,255,.18);',
         'box-shadow:inset 0 1px 0 rgba(255,255,255,.22),0 12px 40px rgba(0,0,0,.5)}',
         '.from{color:rgba(235,235,245,.6)}.d{color:rgba(235,235,245,.8)}',
-        'button{color:#f5f5f7;background:rgba(255,255,255,.12);box-shadow:inset 0 1px 0 rgba(255,255,255,.2),inset 0 0 0 .5px rgba(255,255,255,.12)}}'
+        'button{color:#f5f5f7;background:rgba(255,255,255,.12);box-shadow:inset 0 1px 0 rgba(255,255,255,.2),inset 0 0 0 .5px rgba(255,255,255,.12)}',
+        'button.primary{color:#000;background:#fff;box-shadow:none}}'
     ].join('');
+    var STYLE = 'all:initial !important;display:block !important;position:fixed !important;' +
+        'inset:0 auto auto 0 !important;z-index:2147483647 !important';
+    var READY_AFTER = 500;
+
+    // Whether the notice can be seen as it was drawn (above).
+    function unobscured(host) {
+        try {
+            if (!host.isConnected || !host.matches(':popover-open')) return false;
+            if (host.getAttribute('style') !== STYLE || host.getAttribute('popover') !== 'manual') return false;
+            if (document.fullscreenElement || document.webkitFullscreenElement) return false;
+            if (!host.checkVisibility({ opacityProperty: true, visibilityProperty: true })) return false;
+            var drawn = ['::before', '::after'].some(function (pseudo) {
+                var c = getComputedStyle(host, pseudo).content;
+                return c && c !== 'none' && c !== 'normal';
+            });
+            if (drawn) return false;
+            var above = document.querySelectorAll(':popover-open, :modal');
+            for (var i = 0; i < above.length; i++) if (above[i] !== host) return false;
+            return true;
+        } catch (e) { return false; }
+    }
 
     var notice = null;
     function hideNotice() {
         if (!notice) return;
         document.removeEventListener('keydown', notice.onKey, true);
+        clearTimeout(notice.timer);
         notice.host.remove();
         notice = null;
     }
     function showNotice(id, site, sysex) {
         hideNotice();
         var host = document.createElement('webmidi-notice');
-        host.setAttribute('style', 'all:initial !important;display:block !important;position:fixed !important;' +
-            'inset:0 auto auto 0 !important;z-index:2147483647 !important');
+        host.setAttribute('style', STYLE);
+        host.setAttribute('popover', 'manual');
         var shadow = host.attachShadow({ mode: 'closed' });
         var style = document.createElement('style');
         style.textContent = CSS;
         var box = document.createElement('div');
         box.className = 'wrap';
-        box.setAttribute('role', 'status');
+        box.setAttribute('role', 'alertdialog');
+        box.setAttribute('aria-labelledby', 'q');
         var img = document.createElement('img'); img.className = 'icon'; img.src = ICON; img.alt = '';
         var from = document.createElement('p'); from.className = 'from'; from.textContent = TEXT.from;
-        var q = document.createElement('p'); q.className = 'q';
+        var q = document.createElement('p'); q.className = 'q'; q.id = 'q';
         q.textContent = (sysex ? TEXT.sysex : TEXT.midi).replace('{site}', site);
-        var d = document.createElement('p'); d.className = 'd'; d.textContent = TEXT.where;
+        box.append(img, from, q);
+        if (sysex) {
+            var d = document.createElement('p'); d.className = 'd'; d.textContent = TEXT.sysexDetail;
+            box.append(d);
+        }
         var bar = document.createElement('div'); bar.className = 'b';
         var close = document.createElement('button'); close.textContent = TEXT.close;
-        bar.append(close);
-        box.append(img, from, q, d, bar);
+        var allow = document.createElement('button'); allow.className = 'primary';
+        allow.textContent = sysex ? TEXT.allowElsewhere : TEXT.allow;
+        bar.append(close, allow);
+        box.append(bar);
         shadow.append(style, box);
         function dismiss(e) {
             if (!e.isTrusted) return;
@@ -264,8 +314,19 @@
         close.addEventListener('click', dismiss);
         var onKey = function (e) { if (e.key === 'Escape') dismiss(e); };
         document.addEventListener('keydown', onKey, true);
+        var shownAt = Date.now(), timer;
+        if (!sysex) {
+            allow.disabled = true;
+            timer = setTimeout(function () { allow.disabled = false; }, READY_AFTER);
+        }
+        allow.addEventListener('click', function (e) {
+            if (!e.isTrusted) return;
+            var yes = !sysex && Date.now() - shownAt >= READY_AFTER && unobscured(host);
+            ask({ type: yes ? 'notice-allow' : 'notice-open', id: id }).catch(function () {});
+        });
         (document.body || document.documentElement).appendChild(host);
-        notice = { host: host, onKey: onKey };
+        try { host.showPopover(); } catch (e) {}
+        notice = { host: host, onKey: onKey, timer: timer };
     }
 
     browser.runtime.onMessage.addListener(function (msg) {
