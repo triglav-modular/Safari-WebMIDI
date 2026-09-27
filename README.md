@@ -65,8 +65,9 @@ page ── shim.js (page world) ──MessageChannel── content.js (isolated
   accent colour on every page the extension may read, which for this one is
   every page, and an icon in colour as it is. So the button is Safari's
   `labelColor` (black or white at 85%, as the manifest's `icon_variants` for
-  light and dark) with just enough blue in it to count as colour, and a tab
-  using MIDI gets the grey glyph instead (`tools/make-icons.swift`).
+  light and dark), with 5% of its pixels a little off in blue so that it
+  counts as colour, and a tab using MIDI gets the grey glyph instead
+  (`tools/make-icons.swift`).
 - **Safari unloads the background** 30 s after the last message reaches it
   (WebKit's `WebExtensionContext::unloadBackgroundContentIfPossible`); a
   reply it still owes does not count. The question waiting for the person

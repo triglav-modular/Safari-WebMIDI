@@ -17,7 +17,7 @@ let box = page.bounds(for: .mediaBox)
 let out = URL(fileURLWithPath: args[2])
 try? FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
 
-func render(_ size: Int, _ draw: (CGContext, CGFloat) -> Void) -> Data {
+func render(_ size: Int, then: (NSBitmapImageRep) -> Void = { _ in }, _ draw: (CGContext, CGFloat) -> Void) -> Data {
     let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: size, pixelsHigh: size, bitsPerSample: 8,
                                samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
                                bytesPerRow: 0, bitsPerPixel: 0)!
@@ -27,6 +27,7 @@ func render(_ size: Int, _ draw: (CGContext, CGFloat) -> Void) -> Data {
     ctx.cgContext.clear(CGRect(x: 0, y: 0, width: size, height: size))
     draw(ctx.cgContext, CGFloat(size))
     NSGraphicsContext.restoreGraphicsState()
+    then(rep)
     return rep.representation(using: .png, properties: [:])!
 }
 func glyph(_ cg: CGContext, in rect: CGRect, white: Bool = false, color: CGColor? = nil) {
@@ -72,19 +73,47 @@ func write(_ name: String, _ data: Data) { try! data.write(to: out.appendingPath
 // So the glyph in grey, toolbar-N, is the accent, for a tab whose page is
 // using Web MIDI (background.js).  The button otherwise is labelColor
 // itself, black or white at 85%, for light and dark (the manifest's
-// icon_variants), with just enough blue taken from or added to it to count
-// as colour.  Measured on this glyph with safari_isGrayscale, which
-// averages the image down first: 28 levels of blue passed for grey at 85%,
-// 32 did not.
-let toolbarBlue: CGFloat = 36.0 / 255
+// icon_variants), and just enough of it in colour to count as colour.
+//
+// safari_isGrayscale draws the icon into premultiplied RGBA at its own
+// size (the 38 px file, for the 19 pt Safari asks for on a Retina screen)
+// and counts it as colour when at least 3% of the pixels with alpha 25 or
+// more have two channels over 24 apart.  Tinting the whole glyph that far
+// showed: its white read as cream beside Safari's own buttons.  So 5% of
+// the glyph's solid pixels, spread out, have 30 levels of blue taken off
+// (white) or put in (black), and every other pixel is labelColor exactly.
+let toolbarShift = 30, toolbarShare = 0.05
+func sparselyTinted(_ white: Bool) -> (NSBitmapImageRep) -> Void {
+    return { rep in
+        let w = rep.pixelsWide, h = rep.pixelsHigh, bytes = rep.bitmapData!, row = rep.bytesPerRow
+        var visible = 0, solid: [(Int, Int)] = []
+        for y in 0..<h { for x in 0..<w {
+            let a = Int(bytes[y * row + x * 4 + 3])
+            if a >= 25 { visible += 1 }
+            if a >= 200 { solid.append((x, y)) }
+        } }
+        // Spread evenly and without a pattern: by a hash of the position.
+        func hash(_ p: (Int, Int)) -> UInt32 {
+            var v = UInt32(truncatingIfNeeded: p.0 &* 73856093) ^ UInt32(truncatingIfNeeded: p.1 &* 19349663)
+            v ^= v >> 13; v = v &* 0x5bd1e995; v ^= v >> 15
+            return v
+        }
+        let n = Int((Double(visible) * toolbarShare).rounded(.up))
+        precondition(solid.count >= n, "too few solid pixels to tint")
+        for (x, y) in solid.sorted(by: { hash($0) < hash($1) }).prefix(n) {
+            let i = y * row + x * 4, a = Int(bytes[i + 3])
+            bytes[i + 2] = UInt8(white ? a - toolbarShift : toolbarShift)
+        }
+    }
+}
 for s in [16, 19, 32, 38, 48, 64] {
     let r = CGRect(x: 0, y: 0, width: s, height: s)
     write("toolbar-\(s).png", render(s) { cg, _ in glyph(cg, in: r, white: true, color: CGColor(gray: 0, alpha: 1)) })
-    write("toolbar-light-\(s).png", render(s) { cg, _ in
-        glyph(cg, in: r, white: true, color: CGColor(srgbRed: 0, green: 0, blue: toolbarBlue, alpha: 0.85))
+    write("toolbar-light-\(s).png", render(s, then: sparselyTinted(false)) { cg, _ in
+        glyph(cg, in: r, white: true, color: CGColor(gray: 0, alpha: 0.85))
     })
-    write("toolbar-dark-\(s).png", render(s) { cg, _ in
-        glyph(cg, in: r, white: true, color: CGColor(srgbRed: 1, green: 1, blue: 1 - toolbarBlue, alpha: 0.85))
+    write("toolbar-dark-\(s).png", render(s, then: sparselyTinted(true)) { cg, _ in
+        glyph(cg, in: r, white: true, color: CGColor(gray: 1, alpha: 0.85))
     })
 }
 for s in [48, 64, 96, 128, 256, 512] { write("icon-\(s).png", render(s, tile)) }
