@@ -13,7 +13,7 @@ jobs:
   test:
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Port against Chromium
         run: ./tools/test-differential.sh 50000
       - name: CoreMIDI hub
