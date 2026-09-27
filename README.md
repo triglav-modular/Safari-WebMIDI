@@ -159,3 +159,12 @@ What these cannot reach is Safari's own plumbing (the extension store,
 (`npx wrangler deploy`). `./tools/build.sh --notarize` puts the notarised disk
 image at `site/Web-MIDI.dmg`, and a commit of it publishes the new version.
 
+A pushed `site/Web-MIDI.dmg` also becomes a GitHub release, by
+`.github/workflows/release.yml`: `tools/release.sh` opens the image, takes
+the version from the app inside, refuses unless `extension/manifest.json`
+and the page say the same version and the image and app are stapled, then
+tags `v<version>` on that commit and attaches the image as `Web-MIDI.dmg`
+(so `releases/latest/download/Web-MIDI.dmg` is always the newest). A version
+already released with other bytes is refused: a new build needs a new
+version. Run the workflow by hand with a commit to release an older image.
+
