@@ -1,0 +1,47 @@
+# CodeQL, set up here rather than by GitHub's default setup: that builds
+# Swift only from an Xcode project or a Swift package, and this project's
+# Swift is compiled by tools/build.sh with swiftc.  The Swift job runs that
+# compile, unsigned; the other languages need no build.  The categories are
+# the ones default setup used, so its alerts carry on.
+name: codeql
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '23 5 * * 1'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  analyze:
+    runs-on: ${{ matrix.language == 'swift' && 'macos-15' || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { language: actions, build-mode: none }
+          - { language: c-cpp, build-mode: none }
+          - { language: javascript-typescript, build-mode: none }
+          - { language: python, build-mode: none }
+          - { language: swift, build-mode: manual }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+      - name: Compile the extension and the app, as tools/build.sh does
+        if: matrix.language == 'swift'
+        run: |
+          mkdir -p build/obj
+          swiftc -target arm64-apple-macos13.5 -parse-as-library -application-extension \
+              -module-name WebMIDIExtension native/MIDIMessages.swift native/MIDIHub.swift native/Handler.swift \
+              -Xlinker -e -Xlinker _NSExtensionMain -o build/obj/ext
+          swiftc -target arm64-apple-macos13.5 -module-name WebMIDI app/App.swift -o build/obj/app
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:${{ matrix.language }}

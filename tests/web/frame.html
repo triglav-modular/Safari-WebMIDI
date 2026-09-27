@@ -8,7 +8,10 @@
     // frame's container policy or not; its answer is passed up.
     const f = document.createElement('iframe');
     if (params.get('nest') !== 'none') f.setAttribute('allow', params.get('nest'));
-    f.src = params.get('top') + '/frame.html?n=' + Math.random().toString(36).slice(2);
+    // Only the origin of `top`, over http(s): the frame is always this page.
+    const top = new URL(params.get('top'));
+    if (!/^https?:$/.test(top.protocol)) throw new Error('top must be an http(s) origin');
+    f.src = top.origin + '/frame.html?n=' + Math.random().toString(36).slice(2);
     addEventListener('message', e => { if (e.source === f.contentWindow) parent.postMessage(e.data, '*'); });
     document.documentElement.append(f);
   } else if (params.has('history')) {
