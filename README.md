@@ -193,6 +193,17 @@ a question swapped under the popup, an insecure page, a frame reloaded
 under a new policy, a refused send with a `clear()` behind it, and the
 native process starting again.
 
+```bash
+node tests/deploy/test-worker.js
+```
+
+The worker against fake KV and GitHub: a click with the headers Safari sends
+is counted once, as the day and the version and nothing else; a crawler, a
+prefetch, a HEAD or a missing binding is not, and the download goes on
+regardless. It also holds the worker against the
+page's Download link and the binding in `wrangler.toml`, the two ways the
+downloads could stop being counted without an error.
+
 `.github/workflows/tests.yml` runs all of these on every push.
 
 What these cannot reach is Safari's own plumbing (the extension store,
@@ -211,8 +222,8 @@ app icon, the wave or the page's `--bg` changes, and put the stamp it prints
 on `og:image`.
 
 The download is the newest GitHub release's disk image: the page links to
-`releases/latest/download/Web-MIDI.dmg`, and the worker sends the old
-address, `…/safari-webmidi/Web-MIDI.dmg`, there too. To release a version,
+`…/safari-webmidi/Web-MIDI.dmg`, where the worker counts it and sends it on
+to `releases/latest/download/Web-MIDI.dmg`. To release a version,
 bump it in `extension/manifest.json` and the page's version line,
 `./tools/build.sh --notarize`, commit and push, then
 
@@ -227,3 +238,21 @@ and app are stapled and Developer ID-signed. Then it tags `v<version>` on the
 commit, attaches the image as `Web-MIDI.dmg`, and checks that the page's link
 now downloads it. A version already released with other bytes is refused: a
 new build needs a new version.
+
+### Download counts
+
+```bash
+./tools/downloads.sh
+```
+
+The worker writes one key per download to the `COUNTS` KV namespace
+(`wrangler.toml`): the day, and the version that was newest then. Nothing of
+the request is kept: no address, no user agent, no header. It counts a
+download when a browser went there as it goes to a page, by a click, a link
+or a typed address (`Sec-Fetch-Mode: navigate`, `Sec-Fetch-Dest: document`).
+Not by `Sec-Fetch-User`, which Safari does not send even for a real click.
+Crawlers, link previews, prefetches and curl are not counted, so the count is
+a floor, and a download straight from GitHub is not in it.
+The script prints it by day, month and version, beside GitHub's own count of
+each release's asset, which takes every fetch from anywhere, bots and
+`tools/release.sh`'s check of each release included.

@@ -1,6 +1,6 @@
 # The test suites, on every push: the port against Chromium, the CoreMIDI
-# hub, the page and extension scripts in Node, and the extension end to end
-# in WebKit with the web-platform-tests IDL test.
+# hub, the page and extension scripts and the worker in Node, and the
+# extension end to end in WebKit with the web-platform-tests IDL test.
 name: tests
 on:
   push:
@@ -22,6 +22,8 @@ jobs:
         run: node tests/shim/test-clear.js && node tests/shim/test-clock.js
       - name: Extension scripts (Node)
         run: node tests/extension/test-extension.js
+      - name: Download counter (Node)
+        run: node tests/deploy/test-worker.js
       - name: WebKit end to end
         run: ./tools/test-webkit.sh
       - name: web-platform-tests

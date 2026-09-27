@@ -1,8 +1,8 @@
 #!/bin/bash
 # Publishes the notarised disk image as a GitHub release: tag v<version> on
 # a pushed commit, titled "Web MIDI <version>", with the image attached as
-# Web-MIDI.dmg.  The download page links to releases/latest/download/
-# Web-MIDI.dmg, so the newest release is the download.
+# Web-MIDI.dmg.  The download page links, by way of the worker, to
+# releases/latest/download/Web-MIDI.dmg, so the newest release is the download.
 #
 #   ./tools/build.sh --notarize      -> build/Web-MIDI.dmg
 #   (commit the version, push)
@@ -23,7 +23,9 @@ cd "$ROOT"
 DMG="$ROOT/build/Web-MIDI.dmg"
 PAGE="https://triglavmodular.hu/mods/safari-webmidi/"
 REPO="triglav-modular/Safari-WebMIDI"
-LATEST_URL="https://github.com/$REPO/releases/latest/download/Web-MIDI.dmg"
+# The page's Download.  curl does not count there (deploy/worker.js), but
+# GitHub counts the fetch.
+LATEST_URL="${PAGE}Web-MIDI.dmg"
 COMMIT=HEAD DRY=0
 for a in "$@"; do
     case "$a" in

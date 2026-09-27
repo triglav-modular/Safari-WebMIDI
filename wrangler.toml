@@ -12,5 +12,11 @@ workers_dev = false
 routes = [
   { pattern = "triglavmodular.hu/mods/safari-webmidi*", zone_name = "triglavmodular.hu" }
 ]
+# The download counts: one key per download (deploy/worker.js, count()),
+# read back by tools/downloads.sh.  Declared here because a binding that is
+# not declared is not promised to survive a deploy.
+[[kv_namespaces]]
+binding = "COUNTS"
+id = "c2f56cbc17fe47c8b89630b2b7e76909"
 [observability]
 enabled = true
