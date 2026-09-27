@@ -30,13 +30,64 @@ func render(_ size: Int, then: (NSBitmapImageRep) -> Void = { _ in }, _ draw: (C
     then(rep)
     return rep.representation(using: .png, properties: [:])!
 }
-func glyph(_ cg: CGContext, in rect: CGRect, white: Bool = false, color: CGColor? = nil) {
+// The glyph's shapes, read from the page.  icon.ai fills each one and
+// then strokes it with PDF's default line, 1 pt, which is half the weight
+// of its ring; the toolbar draws them with a line of its own (below).
+final class PathReader {
+    var paths: [CGPath] = [], current = CGMutablePath(), ctm = [CGAffineTransform.identity]
+    var last = CGPoint.zero
+}
+let glyphPaths: [CGPath] = {
+    let reader = PathReader()
+    let table = CGPDFOperatorTableCreate()!
+    func numbers(_ s: CGPDFScannerRef, _ n: Int) -> [CGFloat] {
+        var v = [CGFloat](repeating: 0, count: n)
+        for i in (0..<n).reversed() { var x: CGPDFReal = 0; CGPDFScannerPopNumber(s, &x); v[i] = x }
+        return v
+    }
+    func r(_ info: UnsafeMutableRawPointer?) -> PathReader { Unmanaged<PathReader>.fromOpaque(info!).takeUnretainedValue() }
+    CGPDFOperatorTableSetCallback(table, "q") { _, i in let r = r(i); r.ctm.append(r.ctm.last!) }
+    CGPDFOperatorTableSetCallback(table, "Q") { _, i in _ = r(i).ctm.popLast() }
+    CGPDFOperatorTableSetCallback(table, "cm") { s, i in
+        let n = numbers(s, 6), r = r(i)
+        r.ctm[r.ctm.count - 1] = CGAffineTransform(a: n[0], b: n[1], c: n[2], d: n[3], tx: n[4], ty: n[5]).concatenating(r.ctm.last!)
+    }
+    CGPDFOperatorTableSetCallback(table, "m") { s, i in
+        let n = numbers(s, 2), r = r(i); r.current.move(to: CGPoint(x: n[0], y: n[1]), transform: r.ctm.last!)
+    }
+    CGPDFOperatorTableSetCallback(table, "l") { s, i in
+        let n = numbers(s, 2), r = r(i); r.current.addLine(to: CGPoint(x: n[0], y: n[1]), transform: r.ctm.last!)
+    }
+    CGPDFOperatorTableSetCallback(table, "c") { s, i in
+        let n = numbers(s, 6), r = r(i)
+        r.current.addCurve(to: CGPoint(x: n[4], y: n[5]), control1: CGPoint(x: n[0], y: n[1]),
+                           control2: CGPoint(x: n[2], y: n[3]), transform: r.ctm.last!)
+    }
+    CGPDFOperatorTableSetCallback(table, "h") { _, i in r(i).current.closeSubpath() }
+    CGPDFOperatorTableSetCallback(table, "re") { s, i in
+        let n = numbers(s, 4), r = r(i); r.current.addRect(CGRect(x: n[0], y: n[1], width: n[2], height: n[3]), transform: r.ctm.last!)
+    }
+    // Each shape is filled, then stroked on the same outline: keep it once.
+    CGPDFOperatorTableSetCallback(table, "f") { _, i in let r = r(i); r.paths.append(r.current.copy()!); r.current = CGMutablePath() }
+    CGPDFOperatorTableSetCallback(table, "S") { _, i in r(i).current = CGMutablePath() }
+    CGPDFOperatorTableSetCallback(table, "n") { _, i in r(i).current = CGMutablePath() }
+    let scanner = CGPDFScannerCreate(CGPDFContentStreamCreateWithPage(page.pageRef!), table, Unmanaged.passUnretained(reader).toOpaque())
+    precondition(CGPDFScannerScan(scanner), "icon.ai: cannot read the page")
+    precondition(reader.paths.count == 6, "icon.ai: expected the ring and five pins, found \(reader.paths.count) shapes")
+    return reader.paths
+}()
+func glyph(_ cg: CGContext, in rect: CGRect, white: Bool = false, color: CGColor? = nil, line: CGFloat? = nil) {
     cg.saveGState()
     if white { cg.beginTransparencyLayer(auxiliaryInfo: nil) }
     let scale = min(rect.width / box.width, rect.height / box.height)
     cg.translateBy(x: rect.midX - box.width * scale / 2, y: rect.midY - box.height * scale / 2)
     cg.scaleBy(x: scale, y: scale)
-    page.draw(with: .mediaBox, to: cg)
+    if let line {
+        cg.setFillColor(gray: 0, alpha: 1); cg.setStrokeColor(gray: 0, alpha: 1); cg.setLineWidth(line)
+        for p in glyphPaths { cg.addPath(p); cg.fillPath(); cg.addPath(p); cg.strokePath() }
+    } else {
+        page.draw(with: .mediaBox, to: cg)
+    }
     if white {
         // Keep the glyph's coverage, change its colour.
         cg.setBlendMode(.sourceIn)
@@ -106,14 +157,21 @@ func sparselyTinted(_ white: Bool) -> (NSBitmapImageRep) -> Void {
         }
     }
 }
+// The toolbar's line: the ring as heavy as the strokes of Safari's own
+// buttons beside it.  Safari's iCloud Tabs cloud has a 2.80 px stroke on a
+// Retina screen, and the ring was 3.05 px in the 38 px icon at icon.ai's
+// 1 pt line; at 0.65 pt it is 2.80 px.
+let toolbarLine: CGFloat = 0.65
 for s in [16, 19, 32, 38, 48, 64] {
     let r = CGRect(x: 0, y: 0, width: s, height: s)
-    write("toolbar-\(s).png", render(s) { cg, _ in glyph(cg, in: r, white: true, color: CGColor(gray: 0, alpha: 1)) })
+    write("toolbar-\(s).png", render(s) { cg, _ in
+        glyph(cg, in: r, white: true, color: CGColor(gray: 0, alpha: 1), line: toolbarLine)
+    })
     write("toolbar-light-\(s).png", render(s, then: sparselyTinted(false)) { cg, _ in
-        glyph(cg, in: r, white: true, color: CGColor(gray: 0, alpha: 0.85))
+        glyph(cg, in: r, white: true, color: CGColor(gray: 0, alpha: 0.85), line: toolbarLine)
     })
     write("toolbar-dark-\(s).png", render(s, then: sparselyTinted(true)) { cg, _ in
-        glyph(cg, in: r, white: true, color: CGColor(gray: 1, alpha: 0.85))
+        glyph(cg, in: r, white: true, color: CGColor(gray: 1, alpha: 0.85), line: toolbarLine)
     })
 }
 for s in [48, 64, 96, 128, 256, 512] { write("icon-\(s).png", render(s, tile)) }
