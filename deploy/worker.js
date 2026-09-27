@@ -6,6 +6,9 @@
 // the cache headers Pages cannot.  It counts nothing.
 const PUBLIC = '/mods/safari-webmidi';
 const ORIGIN = 'https://triglav-modular.github.io/Safari-WebMIDI';
+// The disk image is a GitHub release asset, not a file of the site; its old
+// address here sends the newest release's.
+const DOWNLOAD = 'https://github.com/triglav-modular/Safari-WebMIDI/releases/latest/download/Web-MIDI.dmg';
 
 // Forwarded to the origin.  Host is deliberately absent: GitHub Pages routes
 // on it.  The conditional headers turn a revalidation into a 304, and
@@ -27,6 +30,10 @@ export default {
     if (!rest.startsWith('/')) {
       return new Response('Not found', { status: 404, headers: { 'cache-control': 'no-store' } });
     }
+    // Not kept: "latest" moves with each release.
+    if (rest === '/Web-MIDI.dmg') {
+      return new Response(null, { status: 302, headers: { location: DOWNLOAD, 'cache-control': 'no-store' } });
+    }
 
     const headers = new Headers();
     for (const name of FORWARD) {
@@ -45,9 +52,9 @@ export default {
       // The origin dresses every 404 as a page; a failure is never kept.
       out.headers.set('cache-control', 'no-store');
     } else {
-      // The page and the download keep their names across versions, so both
-      // are revalidated each time: an unchanged file costs a 304, and a new
-      // version is never hidden behind a cached old one.
+      // The page keeps its name across versions, so it is revalidated each
+      // time: an unchanged file costs a 304, and a new version is never
+      // hidden behind a cached old one.
       out.headers.set('cache-control', 'no-cache');
     }
     return out;

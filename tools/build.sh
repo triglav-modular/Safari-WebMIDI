@@ -5,7 +5,8 @@
 #
 #   ./tools/build.sh              build and sign   -> build/Web MIDI.app
 #   ./tools/build.sh --notarize   ...then notarise  -> build/Web-MIDI.dmg
-#                                                      and site/Web-MIDI.dmg
+#
+# tools/release.sh then publishes the disk image as a GitHub release.
 #
 # No Xcode project: the extension is a handful of files and two small Swift
 # programs, and a script says exactly what goes into the bundle.
@@ -176,5 +177,4 @@ printf '%s\n' "$out"
 printf '%s\n' "$out" | grep -q "status: Accepted" || { echo "Disk image not accepted." >&2; exit 1; }
 xcrun stapler staple "$DMG"
 spctl -a -vv -t open --context context:primary-signature "$DMG"
-cp "$DMG" "$ROOT/site/Web-MIDI.dmg"
-echo "notarised: $DMG (and site/Web-MIDI.dmg)"
+echo "notarised: $DMG"

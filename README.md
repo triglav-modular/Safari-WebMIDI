@@ -156,15 +156,22 @@ What these cannot reach is Safari's own plumbing (the extension store,
 `site/` is the download page, published to GitHub Pages by
 `.github/workflows/pages.yml`, and served at
 <https://triglavmodular.hu/mods/safari-webmidi/> by the worker in `deploy/`
-(`npx wrangler deploy`). `./tools/build.sh --notarize` puts the notarised disk
-image at `site/Web-MIDI.dmg`, and a commit of it publishes the new version.
+(`npx wrangler deploy`).
 
-A pushed `site/Web-MIDI.dmg` also becomes a GitHub release, by
-`.github/workflows/release.yml`: `tools/release.sh` opens the image, takes
-the version from the app inside, refuses unless `extension/manifest.json`
-and the page say the same version and the image and app are stapled, then
-tags `v<version>` on that commit and attaches the image as `Web-MIDI.dmg`
-(so `releases/latest/download/Web-MIDI.dmg` is always the newest). A version
-already released with other bytes is refused: a new build needs a new
-version. Run the workflow by hand with a commit to release an older image.
+The download is the newest GitHub release's disk image: the page links to
+`releases/latest/download/Web-MIDI.dmg`, and the worker sends the old
+address, `…/safari-webmidi/Web-MIDI.dmg`, there too. To release a version,
+bump it in `extension/manifest.json` and the page's version line,
+`./tools/build.sh --notarize`, commit and push, then
 
+```bash
+./tools/release.sh
+```
+
+It opens `build/Web-MIDI.dmg`, takes the version from the app inside, and
+refuses unless the commit's manifest and page say the same version, the
+extension's files in the image are the ones the commit lays out, and the image
+and app are stapled and Developer ID-signed. Then it tags `v<version>` on the
+commit, attaches the image as `Web-MIDI.dmg`, and checks that the page's link
+now downloads it. A version already released with other bytes is refused: a
+new build needs a new version.
