@@ -25,6 +25,8 @@
   .buttons { justify-content: flex-end; margin-top: 12px; }
   button.primary { background: #000; color: #fff; }
   @media (prefers-color-scheme: dark) { button.primary { background: #fff; color: #000; } }
+  /* A question just shown takes no click for half a second (popup.js). */
+  button:disabled { opacity: .45; cursor: default; }
 </style>
 </head>
 <body>

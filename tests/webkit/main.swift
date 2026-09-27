@@ -86,6 +86,7 @@ var browser = {
   runtime: {
     onMessage: { addListener: function (fn) { __listeners.push(fn); } },
     sendNativeMessage: function (app, req) { return window.webkit.messageHandlers.native.postMessage(req); },
+    sendMessage: function (msg) { return window.webkit.messageHandlers.toPopup.postMessage(msg); },
     getURL: function (p) { return 'webmidi-ext://ext/' + (p || ''); }
   },
   storage: { local: {
@@ -97,7 +98,8 @@ var browser = {
       return window.webkit.messageHandlers.toTab.postMessage({ msg: msg, frameId: opts && opts.frameId !== undefined ? opts.frameId : null });
     },
     query: function () { return Promise.resolve([{ id: 1 }]); },
-    onRemoved: { addListener: function () {} }
+    onRemoved: { addListener: function () {} },
+    onUpdated: { addListener: function () {} }
   },
   action: {
     openPopup: function () { return window.webkit.messageHandlers.openPopup.postMessage({}); },
@@ -143,10 +145,15 @@ async function __toContent(msg) {
 // The toolbar popup, an extension page: its messages reach the background
 // with the extension's own URL as the sender.
 let popupStub = """
+var __popupListeners = [];
 var browser = {
-  runtime: { sendMessage: function (m) { return window.webkit.messageHandlers.popupToBg.postMessage(m); } },
+  runtime: {
+    sendMessage: function (m) { return window.webkit.messageHandlers.popupToBg.postMessage(m); },
+    onMessage: { addListener: function (fn) { __popupListeners.push(fn); } }
+  },
   tabs: { query: function () { return window.webkit.messageHandlers.popupTabs.postMessage({}); } }
 };
+function __popupDeliver(msg) { __popupListeners.forEach(function (fn) { fn(msg, { url: 'webmidi-ext://ext/background' }); }); return true; }
 """
 
 final class Harness: NSObject, WKScriptMessageHandlerWithReply, WKScriptMessageHandler, WKNavigationDelegate {
@@ -205,6 +212,7 @@ final class Harness: NSObject, WKScriptMessageHandlerWithReply, WKScriptMessageH
         bcfg.userContentController.addScriptMessageHandler(self, contentWorld: .page, name: "native")
         bcfg.userContentController.addScriptMessageHandler(self, contentWorld: .page, name: "toTab")
         bcfg.userContentController.addScriptMessageHandler(self, contentWorld: .page, name: "openPopup")
+        bcfg.userContentController.addScriptMessageHandler(self, contentWorld: .page, name: "toPopup")
 
         let pcfg = WKWebViewConfiguration()
         pcfg.userContentController.addUserScript(WKUserScript(source: popupStub, injectionTime: .atDocumentStart, forMainFrameOnly: true))
@@ -325,6 +333,13 @@ final class Harness: NSObject, WKScriptMessageHandlerWithReply, WKScriptMessageH
                     else if left == 0 { answered = true; replyHandler(nil, nil) }
                 }
             }
+        case "toPopup":
+            // runtime.sendMessage from the background reaches the popup if it is open.
+            popup.callAsyncJavaScript("return typeof __popupDeliver === 'function' ? __popupDeliver(msg) : null",
+                                      arguments: ["msg": m.body], in: nil, in: .page) { r in
+                if case .success(let v) = r, v != nil, !(v is NSNull) { replyHandler(v, nil) }
+                else { replyHandler(nil, "Could not establish connection. Receiving end does not exist.") }
+            }
         case "openPopup":
             popup.loadFileURL(URL(fileURLWithPath: extDir + "/popup.html"), allowingReadAccessTo: URL(fileURLWithPath: extDir))
             replyHandler(true, nil)
@@ -412,12 +427,13 @@ final class Harness: NSObject, WKScriptMessageHandlerWithReply, WKScriptMessageH
                 return null;
                 """, [:], attempts: a["expect"] as? Bool == false ? 1 : 10) { v in reply(v ?? NSNull(), nil) }
         case "decide":
-            // A real click on the popup's Allow or Don't Allow.
+            // A real click on the popup's Allow or Don't Allow, once it takes
+            // clicks (a question just shown waits half a second).
             let sel = a["selector"] as? String ?? "#askAllow"
             popupEval("""
-                for (let i = 0; i < 20; i++) {
+                for (let i = 0; i < 40; i++) {
                     const b = document.querySelector(sel), a = document.getElementById('ask');
-                    if (b && a && !a.hidden) {
+                    if (b && a && !a.hidden && !b.disabled) {
                         const rc = b.getBoundingClientRect();
                         if (rc.width) return [rc.x + rc.width / 2, rc.y + rc.height / 2];
                     }

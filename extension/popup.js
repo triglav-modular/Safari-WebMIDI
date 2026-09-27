@@ -23,21 +23,38 @@ function stateOf(o) {
     return TEXT.blocked;
 }
 // The question a page is waiting on, asked here where the page cannot
-// reach it (background.js).
+// reach it (background.js).  An answer names the question on show, and the
+// background takes it for that question only; the page can ask something
+// else at any moment, and the popup then shows that instead.  A question
+// that has just come on show takes no click for READY_AFTER ms, so a click
+// aimed at the one before it, or at the page under a popup that has just
+// opened, cannot answer it.
+var READY_AFTER = 500;
+var shownTab = null, shownId = null, readyAt = 0, readyTimer = null;
 function ask(tab) {
     if (!tab) return Promise.resolve();
+    shownTab = tab;
     return browser.runtime.sendMessage({ type: 'pending', tabId: tab.id }).then(function (p) {
         var box = document.getElementById('ask');
         box.hidden = !p;
-        if (!p) return;
+        if (!p) { shownId = null; return; }
         document.getElementById('askQuestion').textContent = (p.sysex ? TEXT.askSysex : TEXT.askMidi).replace('{site}', p.site);
         var detail = document.getElementById('askDetail');
         detail.hidden = !p.sysex;
         detail.textContent = TEXT.askSysexDetail;
         var yes = document.getElementById('askAllow'), no = document.getElementById('askBlock');
         yes.textContent = TEXT.allow; no.textContent = TEXT.block;
+        if (p.id !== shownId) {
+            shownId = p.id;
+            readyAt = Date.now() + READY_AFTER;
+            yes.disabled = no.disabled = true;
+            clearTimeout(readyTimer);
+            readyTimer = setTimeout(function () { yes.disabled = no.disabled = false; }, READY_AFTER);
+        }
         function decide(answer) {
-            browser.runtime.sendMessage({ type: 'decide', tabId: tab.id, answer: answer }).then(function () {
+            if (Date.now() < readyAt || p.id !== shownId) return;
+            browser.runtime.sendMessage({ type: 'decide', tabId: tab.id, id: p.id, answer: answer }).then(function (taken) {
+                if (!taken) { draw(); return; }
                 box.hidden = true;
                 setTimeout(draw, 100);
             });
@@ -46,6 +63,12 @@ function ask(tab) {
         no.onclick = function () { decide('block'); };
     });
 }
+// The background says when the question changes (asked, replaced, answered
+// or gone).
+browser.runtime.onMessage.addListener(function (msg) {
+    if (msg && msg.type === 'asked' && shownTab && msg.tabId === shownTab.id) draw();
+    return undefined;
+});
 function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text) e.textContent = text; return e; }
 
 var privateTab = false;

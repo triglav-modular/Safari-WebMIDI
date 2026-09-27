@@ -8,6 +8,26 @@
 (function () {
     if (window.__webmidiContent) return;
     window.__webmidiContent = true;
+    // Web MIDI is [SecureContext], and an insecure document gets none of
+    // this: no shim, no channel to the extension, no answers for it.  Only
+    // the shim was held back once, and an http page could open the channel
+    // itself and ask for devices (the audit, 2026-09-27).  This world's
+    // isSecureContext is the browser's, which the page cannot redefine, and
+    // it is false under an insecure ancestor too.  background.js checks the
+    // URLs as well.
+    if (!window.isSecureContext) return;
+
+    // This document's id, sent with everything this asks the background: its
+    // scheduled sends, its place in the input, its question and its frame's
+    // policy are its own (background.js).  A frame keeps its frameId, and
+    // often its URL, across a reload; this is new every time.
+    var DOC = Math.random().toString(36).slice(2) + Date.now().toString(36);
+    function ask(msg) { msg.doc = DOC; return browser.runtime.sendMessage(msg); }
+    // Gone, or into the back-forward cache: the background drops its
+    // question and forgets it.
+    window.addEventListener('pagehide', function (e) {
+        if (e.isTrusted) ask({ type: 'gone' }).catch(function () {});
+    }, true);
 
     // --- putting the shim in the page -----------------------------------------
     // Inline first: it runs at once, before any of the page's scripts, so a
@@ -18,7 +38,7 @@
     var SHIM_SOURCE = __SHIM_SOURCE__;
     function inject() {
         var parent = document.head || document.documentElement;
-        if (!parent || !window.isSecureContext) return;
+        if (!parent) return;
         var s = document.createElement('script');
         s.textContent = SHIM_SOURCE + '\n//# sourceURL=webmidi-shim.js';
         parent.appendChild(s);
@@ -92,15 +112,11 @@
         if (!allows(frame, msg.origin)) return Promise.resolve(false);
         // And this document must be allowed itself.
         return window === window.top ? Promise.resolve(true)
-            : browser.runtime.sendMessage({ type: 'policy-self' }).then(function (r) { return r === true; });
+            : ask({ type: 'policy-self' }).then(function (r) { return r === true; });
     });
 
-    function ask(msg) { return browser.runtime.sendMessage(msg); }
-    // This document's id: its scheduled sends and its place in the input
-    // are its own (background.js).
-    var DOC = Math.random().toString(36).slice(2) + Date.now().toString(36);
     function native(req) {
-        return ask({ type: 'native', req: req, doc: DOC }).then(function (r) {
+        return ask({ type: 'native', req: req }).then(function (r) {
             if (!r || r.error) throw r && r.error ? r.error : { name: 'AbortError', message: 'The MIDI system failed to start.' };
             return r.value;
         });
@@ -219,7 +235,7 @@
         notice.host.remove();
         notice = null;
     }
-    function showNotice(site, sysex) {
+    function showNotice(id, site, sysex) {
         hideNotice();
         var host = document.createElement('webmidi-notice');
         host.setAttribute('style', 'all:initial !important;display:block !important;position:fixed !important;' +
@@ -243,7 +259,7 @@
         function dismiss(e) {
             if (!e.isTrusted) return;
             hideNotice();
-            browser.runtime.sendMessage({ type: 'notice-dismissed' }).catch(function () {});
+            ask({ type: 'notice-dismissed', id: id }).catch(function () {});
         }
         close.addEventListener('click', dismiss);
         var onKey = function (e) { if (e.key === 'Escape') dismiss(e); };
@@ -254,7 +270,7 @@
 
     browser.runtime.onMessage.addListener(function (msg) {
         if (msg && msg.type === 'notice') {
-            if (msg.show) showNotice(msg.site, !!msg.sysex); else hideNotice();
+            if (msg.show) showNotice(msg.id, msg.site, !!msg.sysex); else hideNotice();
         }
         return undefined;
     });

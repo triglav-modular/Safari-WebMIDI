@@ -54,36 +54,66 @@ function refused(g, origin, sysex) {
 function error(name, message) { return { name: name, message: message }; }
 var NOT_ALLOWED = error('NotAllowedError', 'Permission to use Web MIDI API was not granted.');
 var POLICY = error('SecurityError', 'Midi has been disabled in this document by permissions policy.');
+var INSECURE = error('SecurityError', 'Web MIDI is only available in secure contexts.');
 
 // --- where a request comes from -------------------------------------------------
+// `doc` is the id content.js makes for its document, sent with every
+// message: a frame keeps its frameId, and often its URL, when it navigates
+// or reloads, so neither tells one document from the next.
+//
 // Whether a frame may use MIDI under the Permissions Policy: the tab's
 // frames are asked which of them holds it, and that one reads its <iframe>'s
-// allow attribute (content.js).  Remembered per frame and document URL,
-// since a container policy applies from the frame's navigation on.
+// allow attribute (content.js).  Remembered per document, since a container
+// policy applies from the frame's navigation on: keyed by frame and URL, a
+// frame reloaded at the same URL under a new allow="midi 'none'" kept the
+// allow it had before (the audit, 2026-09-27).  A frame's own document is
+// new whenever any frame above it navigates, so no descendant outlives its
+// ancestors' answers.
 var policies = new Map();
-function policyOf(sender) {
+function policyOf(sender, doc) {
     if (!sender.frameId) return Promise.resolve(true);
     if (!sender.tab) return Promise.resolve(false);
-    var key = sender.tab.id + ':' + sender.frameId + ':' + sender.url;
+    var origin;
+    try { origin = new URL(sender.url).origin; } catch (e) { return Promise.resolve(false); }
+    function query() {
+        return browser.tabs.sendMessage(sender.tab.id, { type: 'policy', frameId: sender.frameId, origin: origin })
+            .then(function (r) { return r === true; }, function () { return false; });
+    }
+    if (!doc) return query();
+    var key = sender.tab.id + ':' + sender.frameId + ':' + doc;
     if (!policies.has(key)) {
         if (policies.size > 500) policies.clear();
-        var origin;
-        try { origin = new URL(sender.url).origin; } catch (e) { return Promise.resolve(false); }
-        policies.set(key, browser.tabs.sendMessage(sender.tab.id, { type: 'policy', frameId: sender.frameId, origin: origin })
-            .then(function (r) { return r === true; }, function () { return false; }));
+        policies.set(key, query());
     }
     return policies.get(key);
 }
 
+// A potentially trustworthy URL (Secure Contexts 3.1): https, or http to
+// this machine.  Web MIDI is [SecureContext]; content.js serves nothing in
+// an insecure document, and this refuses one whatever reaches it.  The top
+// document is checked as well as the frame: a frame under an insecure page
+// is not a secure context whatever its own scheme.  Frames between the two
+// answer the policy question only if they are secure themselves (content.js).
+function trustworthy(url) {
+    var u;
+    try { u = new URL(url); } catch (e) { return false; }
+    if (u.protocol === 'https:') return true;
+    if (u.protocol !== 'http:') return false;
+    var h = u.hostname;
+    return h === 'localhost' || /\.localhost$/.test(h) || h === '[::1]' || /^127(\.\d{1,3}){3}$/.test(h);
+}
+
 // Whose permission a request uses.  A frame's request uses the top-level
 // site's, as Chrome delegates it, and the question names that site.
-function originOf(sender) {
+function originOf(sender, doc) {
     var own;
     try { own = new URL(sender.url); } catch (e) { return Promise.resolve({ error: POLICY }); }
     if (own.origin === 'null') return Promise.resolve({ error: POLICY });
+    if (!trustworthy(sender.url)) return Promise.resolve({ error: INSECURE });
     var incognito = !!(sender.tab && sender.tab.incognito);
     if (!sender.frameId) return Promise.resolve({ origin: own.origin, host: own.host, incognito: incognito });
-    return policyOf(sender).then(function (allowed) {
+    if (!sender.tab || !trustworthy(sender.tab.url)) return Promise.resolve({ error: INSECURE });
+    return policyOf(sender, doc).then(function (allowed) {
         if (!allowed) return { error: POLICY };
         var top = new URL(sender.tab.url);
         return { origin: top.origin, host: top.host, incognito: incognito };
@@ -96,24 +126,45 @@ function originOf(sender) {
 // prompt there proved only that someone clicked, not what they saw.  A
 // pending question puts a badge on the button and opens the popup; the page
 // shows a notice pointing at the button, which can say no but never yes.
-var pending = new Map();     // tabId -> { site, origin, sysex, incognito, answer, resolve }
-function askUser(tabId, from, sysex) {
+//
+// Each question has an id of its own, and an answer counts only for the
+// question it names: the popup's Allow once carried just the tab, and a
+// basic-MIDI question on show could be swapped for a sysex one under it, so
+// the click granted sysex (the audit, 2026-09-27).  The popup is told when
+// the question changes, and redraws.  A question goes when every document
+// that asked it has gone, or the tab leaves the site it names, and that
+// decides nothing.
+var pending = new Map();     // tabId -> { id, site, origin, sysex, incognito, askers, answer, resolve }
+var asked = 0;
+function askUser(tabId, from, sysex, client) {
     var p = pending.get(tabId);
-    if (p && p.origin === from.origin && p.sysex === sysex) return p.answer;
+    if (p && p.origin === from.origin && p.sysex === sysex) { p.askers.add(client); return p.answer; }
     if (p) p.resolve('dismiss');
-    var entry = { site: from.host, origin: from.origin, sysex: sysex, incognito: from.incognito };
-    entry.answer = new Promise(function (resolve) { entry.resolve = resolve; });
-    pending.set(tabId, entry);
-    entry.answer.then(function () {
-        if (pending.get(tabId) === entry) pending.delete(tabId);
+    var entry = { id: Date.now().toString(36) + '.' + (++asked), site: from.host, origin: from.origin, sysex: sysex,
+                  incognito: from.incognito, askers: new Set([client]) };
+    var settle;
+    entry.answer = new Promise(function (resolve) { settle = resolve; });
+    // Answered once, and gone from `pending` at once, so nothing can answer it again.
+    entry.resolve = function (answer) {
+        if (pending.get(tabId) !== entry) return;
+        pending.delete(tabId);
         showBadge(tabId, false);
         browser.tabs.sendMessage(tabId, { type: 'notice', show: false }, { frameId: 0 }).catch(function () {});
-    });
+        questionChanged(tabId);
+        settle(answer);
+    };
+    pending.set(tabId, entry);
     showBadge(tabId, true);
-    browser.tabs.sendMessage(tabId, { type: 'notice', show: true, site: from.host, sysex: sysex }, { frameId: 0 })
+    browser.tabs.sendMessage(tabId, { type: 'notice', show: true, id: entry.id, site: from.host, sysex: sysex }, { frameId: 0 })
         .catch(function () {});
+    questionChanged(tabId);
     Promise.resolve().then(function () { return browser.action.openPopup(); }).catch(function () {});
     return entry.answer;
+}
+// To the popup, if it is open.
+function questionChanged(tabId) {
+    Promise.resolve().then(function () { return browser.runtime.sendMessage({ type: 'asked', tabId: tabId }); })
+        .catch(function () {});
 }
 function showBadge(tabId, on) {
     try {
@@ -126,15 +177,33 @@ browser.tabs.onRemoved.addListener(function (tabId) {
     if (p) p.resolve('dismiss');
     floors.forEach(function (v, k) { if (k.indexOf(tabId + ':') === 0) floors.delete(k); });
 });
+browser.tabs.onUpdated.addListener(function (tabId, change) {
+    var p = pending.get(tabId);
+    if (!p || !change || !change.url) return;
+    var origin = null;
+    try { origin = new URL(change.url).origin; } catch (e) {}
+    if (origin !== p.origin) p.resolve('cancel');
+});
+// A document has gone (content.js, on pagehide): its question, its place in
+// the input and its policy go with it.
+function gone(sender, doc) {
+    if (!sender.tab || !doc) return;
+    var client = clientOf(sender, doc);
+    var p = pending.get(sender.tab.id);
+    if (p && p.askers.delete(client) && !p.askers.size) p.resolve('cancel');
+    floors.delete(client);
+    policies.delete(sender.tab.id + ':' + sender.frameId + ':' + doc);
+}
 
-function request(sender, sysex) {
-    return originOf(sender).then(function (from) {
+function request(sender, sysex, doc) {
+    return originOf(sender, doc).then(function (from) {
         if (from.error) return { ok: false, error: from.error };
         return grants(from.incognito).then(function (g) {
             if (granted(g, from.origin, sysex)) return { ok: true };
             if (refused(g, from.origin, sysex)) return { ok: false, error: NOT_ALLOWED };
             if (!sender.tab) return { ok: false, error: NOT_ALLOWED };
-            return askUser(sender.tab.id, from, sysex).then(function (answer) {
+            return askUser(sender.tab.id, from, sysex, clientOf(sender, doc)).then(function (answer) {
+                if (answer === 'cancel') return { ok: false, error: NOT_ALLOWED };
                 if (answer === 'dismiss') {
                     // Decides nothing, but three in a row block the site for a week.
                     var n = ((g[from.origin] || {}).dismissed || 0) + 1;
@@ -154,8 +223,8 @@ function request(sender, sysex) {
 }
 
 // The Permissions API state for {name: "midi", sysex}.
-function permissionState(sender, sysex) {
-    return originOf(sender).then(function (from) {
+function permissionState(sender, sysex, doc) {
+    return originOf(sender, doc).then(function (from) {
         if (from.error) return 'denied';
         return grants(from.incognito).then(function (g) {
             if (granted(g, from.origin, sysex)) return 'granted';
@@ -200,10 +269,15 @@ function admitted(send) {
     return new Promise(function (go) { waiting.push({ send: send, go: go }); pump(); });
 }
 function refusedBySafari(e) { return /SFErrorDomain error 3\b/.test(String(e && e.message || e)); }
-function sendNative(cmd) {
+// `slot` is a page's place in its order of sends and clears (below).
+function sendNative(cmd, slot) {
     var tries = 0;
     function attempt() {
         return admitted(cmd.cmd !== 'recv').then(function () {
+            if (slot && cmd.cmd === 'send') {
+                cmd.msgs = cmd.msgs.filter(function (m) { return slot.wanted(m && m[0]); });
+                if (!cmd.msgs.length) return { ok: true, failed: [] };
+            }
             return browser.runtime.sendNativeMessage(NATIVE_APP, cmd);
         }).catch(function (e) {
             if (!refusedBySafari(e) || ++tries > 20) throw e;
@@ -213,41 +287,81 @@ function sendNative(cmd) {
     return attempt();
 }
 
+// --- a page's sends and clears, in order --------------------------------------------
+// A send Safari refused was tried again 250 ms later, after a clear() the
+// page had made meanwhile had reached the native side, so the note it was
+// meant to cancel played (the audit, 2026-09-27).  So each page's sends and
+// clears go to the native side one after another, in the order they arrived
+// here, and a send still waiting to go leaves out its messages to a port
+// the page has cleared since: it had not been sent.  Receives keep out of
+// this, so a send never waits behind one.
+var orders = new Map();     // client -> { tail, clears, cleared: port -> clears then }
+function place(client, req) {
+    var o = orders.get(client);
+    if (!o) { o = { tail: Promise.resolve(), clears: 0, cleared: new Map() }; orders.set(client, o); }
+    if (req.cmd === 'clear') o.cleared.set(String(req.port), ++o.clears);
+    var since = o.clears, turn = o.tail, done;
+    var tail = o.tail = new Promise(function (r) { done = r; });
+    // Nothing left in order: nothing a clear could still reach.
+    tail.then(function () { if (o.tail === tail && orders.get(client) === o) orders.delete(client); });
+    return {
+        turn: turn,
+        done: done,
+        wanted: function (port) { return !(o.cleared.get(String(port)) > since); }
+    };
+}
+
 // --- the native side -----------------------------------------------------------
 // Each document is its own client (content.js makes the id): its scheduled
 // sends are its own to clear, and it reads only what arrived after its first
 // receive.  The hub keeps input from every tab for a while, and a page that
 // asked from the start would otherwise read other sites' traffic.
-var floors = new Map();     // client -> the first sequence number it may read
+//
+// The hub numbers input from 0 in each process, and names the process with
+// a session.  A floor holds for its session only: kept across a restart, a
+// floor of 5,000 silenced the page until the new process had counted that
+// far (the audit, 2026-09-27).  Everything a new process holds arrived after
+// the page's first receive, so the page may read it all.
+var floors = new Map();     // client -> { session, seq: the first sequence number it may read }
 function clientOf(sender, doc) {
     return (sender.tab ? sender.tab.id : 'x') + ':' + (sender.frameId || 0) + ':' + String(doc || '');
 }
 function native(sender, req, doc) {
-    return originOf(sender).then(function (from) {
+    var client = clientOf(sender, doc);
+    // A send or clear takes its place as it arrives, before the checks,
+    // which take their own time.
+    var slot = req.cmd === 'send' || req.cmd === 'clear' ? place(client, req) : null;
+    var result = originOf(sender, doc).then(function (from) {
         if (from.error) return { error: from.error };
         return grants(from.incognito).then(function (g) {
             if (!granted(g, from.origin, false)) return { error: NOT_ALLOWED };
-            var client = clientOf(sender, doc);
             var cmd = { cmd: req.cmd };
             var sysex = granted(g, from.origin, true);
             switch (req.cmd) {
             case 'ports': break;
-            case 'send': cmd.msgs = req.msgs; cmd.sysex = sysex; cmd.client = client; break;
+            case 'send': cmd.msgs = Array.isArray(req.msgs) ? req.msgs : []; cmd.sysex = sysex; cmd.client = client; break;
             case 'clear': cmd.port = String(req.port); cmd.client = client; break;
             case 'recv':
                 var floor = floors.get(client);
-                cmd.since = floor === undefined ? -1 : Math.max(Number(req.since) || 0, floor);
+                if (floor === undefined) cmd.since = -1;
+                else { cmd.since = Math.max(Number(req.since) || 0, floor.seq); cmd.session = floor.session; }
                 cmd.gen = req.gen; cmd.sysex = sysex;
                 cmd.wait = Math.max(0, Math.min(Number(req.wait) || 0, 5000));
                 break;
             default: return { error: error('NotSupportedError', 'Unknown request') };
             }
-            return sendNative(cmd).then(function (r) {
+            var go = slot ? slot.turn.then(function () { return sendNative(cmd, slot); }) : sendNative(cmd);
+            return go.then(function (r) {
                 if (!r) return { error: error('AbortError', 'The MIDI system failed to start.') };
                 if (r.error) return { error: error('InvalidStateError', 'Platform dependent initialization failed.') };
-                if (req.cmd === 'recv' && !floors.has(client)) {
-                    if (floors.size > 1000) floors.clear();
-                    floors.set(client, r.seq);
+                if (req.cmd === 'recv') {
+                    var f = floors.get(client);
+                    if (f === undefined) {
+                        if (floors.size > 1000) floors.clear();
+                        floors.set(client, { session: r.session, seq: r.seq });
+                    } else if (f.session !== r.session) {
+                        floors.set(client, { session: r.session, seq: 0 });
+                    }
                 }
                 return { value: r };
             }, function () {
@@ -255,6 +369,8 @@ function native(sender, req, doc) {
             });
         });
     });
+    if (slot) result.then(slot.done, slot.done);
+    return result;
 }
 
 // --- messages --------------------------------------------------------------------
@@ -264,14 +380,17 @@ function fromExtensionPage(sender) {
 browser.runtime.onMessage.addListener(function (msg, sender) {
     if (!msg) return undefined;
     switch (msg.type) {
-    case 'request': return request(sender, !!msg.sysex);
+    case 'request': return request(sender, !!msg.sysex, msg.doc);
     case 'native': return native(sender, msg.req || {}, msg.doc);
-    case 'permission': return permissionState(sender, !!msg.sysex);
-    case 'policy-self': return policyOf(sender);
-    // The page's notice can say no, never yes.
-    case 'notice-dismissed':
-        if (sender.tab && !sender.frameId && pending.has(sender.tab.id)) pending.get(sender.tab.id).resolve('dismiss');
+    case 'permission': return permissionState(sender, !!msg.sysex, msg.doc);
+    case 'policy-self': return policyOf(sender, msg.doc);
+    case 'gone': gone(sender, msg.doc); return Promise.resolve(true);
+    // The page's notice can say no, never yes, and only to the question it showed.
+    case 'notice-dismissed': {
+        var n = sender.tab && !sender.frameId ? pending.get(sender.tab.id) : null;
+        if (n && n.id === msg.id) n.resolve('dismiss');
         return Promise.resolve(true);
+    }
     }
     // From the toolbar popup, the extension's own page, only.
     if (!fromExtensionPage(sender)) return undefined;
@@ -279,11 +398,14 @@ browser.runtime.onMessage.addListener(function (msg, sender) {
     case 'grants': return grants(!!msg.incognito);
     case 'pending': {
         var p = pending.get(msg.tabId);
-        return Promise.resolve(p ? { site: p.site, sysex: p.sysex } : null);
+        return Promise.resolve(p ? { id: p.id, site: p.site, sysex: p.sysex } : null);
     }
+    // True if it answered the question it names; false if that question has
+    // gone or been replaced, and the popup shows the one asked now.
     case 'decide': {
         var q = pending.get(msg.tabId);
-        if (q && (msg.answer === 'allow' || msg.answer === 'block')) q.resolve(msg.answer);
+        if (!q || q.id !== msg.id || (msg.answer !== 'allow' && msg.answer !== 'block')) return Promise.resolve(false);
+        q.resolve(msg.answer);
         return Promise.resolve(true);
     }
     case 'forget':

@@ -474,6 +474,26 @@ function loopOf(access) {
     eq(await frame(other + '?query', 'midi'), 'granted');
   });
 
+  await test('a frame reloaded at the same URL under a new allow is asked about afresh', async () => {
+    // Same URL, so the same frame id; a new document, so a new answer.  Keyed
+    // by frame and URL, the first allow outlived the change (the audit,
+    // 2026-09-27).
+    const f = document.createElement('iframe');
+    const next = () => new Promise(r => addEventListener('message', function on(e) {
+      if (e.source === f.contentWindow) { removeEventListener('message', on); r(e.data); }
+    }));
+    const src = other + '?n=reloaded';
+    f.setAttribute('allow', 'midi');
+    let got = next();
+    f.src = src;
+    document.body.append(f);
+    eq(await within(got, 5000, 'the first answer'), 'MIDIAccess');
+    f.setAttribute('allow', "midi 'none'");
+    got = next();
+    f.src = src;
+    eq(await within(got, 5000, 'the answer after the reload'), POLICY);
+  });
+
   await test('frames within frames: each container\u2019s allow must let the next in', async () => {
     const top = encodeURIComponent(location.origin);
     eq(await frame(other + '?nest=midi&top=' + top, 'midi'), 'MIDIAccess');

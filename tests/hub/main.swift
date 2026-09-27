@@ -171,6 +171,30 @@ DispatchQueue.global().async {
     check("a page cannot hold more than 10 MB of scheduled sends", capped)
     _ = ask(["cmd": "clear", "port": out, "client": "C"])
 
+    // A time too far ahead for the clock is refused, and the hub carries on:
+    // a page may pass 1e100, and converting it to host time trapped and took
+    // the process down (the audit, 2026-09-27).
+    check("the host-time conversion saturates rather than trapping", MIDIHub.hostTime(atWallMillis: 1e100) == .max)
+    for bad in [1e100, 1.7e308, Double.infinity, Double.nan, now() + MIDIHub.maxAheadMs + 60_000] {
+        let r = ask(["cmd": "send", "client": "D", "msgs": [[out, b64([0x90, 3, 1]), bad]]])
+        check("refuses a send timed at \(bad)", (r["failed"] as? [String]) == [out], "\(r)")
+    }
+    let fifty = ask(["cmd": "send", "client": "D", "msgs": [[out, b64([0x90, 3, 1]), now() + 50 * 365.25 * 86_400_000]]])
+    check("holds a send timed fifty years ahead", (fifty["failed"] as? [String])?.isEmpty == true, "\(fifty)")
+    _ = ask(["cmd": "clear", "port": out, "client": "D"])
+
+    // Received messages are numbered afresh in each process, which a
+    // receive names; a cursor from another one reads from this one's start
+    // rather than waiting for the count to reach it (the audit, 2026-09-27).
+    let here = ask(["cmd": "recv", "since": cursor, "wait": 0])
+    let session = here["session"] as? String ?? ""
+    check("a receive names this process", !session.isEmpty, "\(here)")
+    let ours = ask(["cmd": "recv", "since": 1_000_000_000, "session": session, "wait": 0])
+    check("a cursor from this process is taken as it is", (ours["events"] as? [Any])?.isEmpty == true, "\(ours)")
+    let theirs = ask(["cmd": "recv", "since": 1_000_000_000, "session": "an earlier process", "wait": 0])
+    check("a cursor from another process reads from this one's start",
+          ((theirs["events"] as? [Any])?.count ?? 0) > 0 && theirs["seq"] as? Int == here["seq"] as? Int, "\(theirs["seq"] ?? "?")")
+
     // Long poll: idle holds, an arrival answers early, a port change wakes it.
     var t0 = Date()
     let idle = ask(["cmd": "recv", "since": cursor, "wait": 300])

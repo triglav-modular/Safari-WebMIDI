@@ -33,13 +33,21 @@ page ── shim.js (page world) ──MessageChannel── content.js (isolated
   looks for `requestMIDIAccess` while loading finds it. Safari does not
   support `"world": "MAIN"`; a page whose CSP refuses inline script gets the
   file instead, a moment later.
+- **Secure contexts only.** An insecure document (plain http, or anything
+  under an http page) gets neither the shim nor the channel to the
+  extension, and the background refuses such URLs as well. http to this
+  machine (`localhost`, `127.0.0.1`, `[::1]`) is secure, as Safari counts it.
 - **background.js** holds the permission decisions and is the only way to
   CoreMIDI; every request is checked there, as Chrome checks in the browser
   process. The question is asked in the extension's toolbar popup (with a
   badge on the button), never in the page, which could restyle or hide
   anything drawn in its own DOM; the page shows only a notice pointing at
   the button, which can dismiss but not allow. As in Chrome, three
-  dismissals block a site for a week.
+  dismissals block a site for a week. Every question has an id, and an
+  answer counts only for the question it names: if the page asks something
+  else while the popup is open, the popup redraws, and a question just
+  shown takes no click for half a second. A question goes, deciding
+  nothing, when the documents that asked it go or the tab leaves the site.
 - **MIDIHub** schedules timestamped sends itself, in (time, submission)
   order, with one fixed offset between the page's clock and CoreMIDI's.
 - **Receiving.** Safari delivers the extension's native requests one at a
@@ -52,7 +60,9 @@ page ── shim.js (page world) ──MessageChannel── content.js (isolated
   five seconds and refuses more than 151 at once (`SFErrorDomain error 3`).
   Receiving every 15 ms kept the count near it, and notes sent on top were
   refused and lost. The background sends at most 20 requests a second, with
-  25 in hand, sends first, and tries a refused one again.
+  25 in hand, sends first, and tries a refused one again. A page's sends
+  and clears go in the order it made them, so a refused send tried again
+  cannot land after a `clear()` made behind it.
 
 ## Where it follows the spec rather than Chrome
 
@@ -86,6 +96,9 @@ Where Chrome and the spec disagree, this does what Chrome does:
 - **`clear()` inside 20 ms.** A send due within 20 ms has already gone to
   CoreMIDI and plays. `MIDIFlushOutput` cannot help: it delivers a System
   Reset to the destination.
+- **Sends timed more than a century ahead** are dropped quietly, where
+  Chrome would hold them. The Mac's host clock ends 584 years out, and a
+  page's `1e100` once crashed the native process converting to it.
 - **Cross-origin frames of `about:blank` or `srcdoc`** are refused, and so
   are frames inside a closed shadow root, whose `allow` attribute cannot be
   read.
@@ -145,6 +158,15 @@ node tests/shim/test-clock.js
 The page script in Node against a fake content script, for what the harness
 cannot stage: sends queued behind one that has not come back, and a wall
 clock corrected while a page is open.
+
+```bash
+node tests/extension/test-extension.js
+```
+
+The background, popup and content script in Node against a fake Safari:
+a question swapped under the popup, an insecure page, a frame reloaded
+under a new policy, a refused send with a `clear()` behind it, and the
+native process starting again.
 
 `.github/workflows/tests.yml` runs all of these on every push.
 

@@ -9,12 +9,16 @@ import Foundation
 //   ports                                          -> { gen, inputs: [port], outputs: [port] }
 //   send   msgs: [[port, base64, t]], sysex, client -> { ok, failed: [port] }
 //   clear  port, client                             -> { ok }
-//   recv   since, gen, wait, sysex                  -> { seq, gen, events: [[port, base64, t]] }
+//   recv   since, session, gen, wait, sysex         -> { seq, session, gen, events: [[port, base64, t]] }
 // `client` is a page (one document); the background clamps each page's
-// `since` to where it started.
+// `since` to where it started.  Received messages are numbered from 0 in
+// each process, and `session` names the process: a `since` read in another
+// session counts from this one's start.
 // A port is { id, name, manufacturer, version }.  Times are milliseconds
 // since 1970 (the page's performance.timeOrigin + performance.now()), so
-// both sides share a clock without sharing a process; 0 means "now".
+// both sides share a clock without sharing a process; 0 means "now".  A
+// send may be timed up to `maxAheadMs` ahead; one timed later, or not a
+// finite number, is refused and reported failed.
 // `recv` is a long poll: it answers as soon as a message arrives after
 // `since` or the port list differs from `gen`, or after `wait` ms.
 //
@@ -37,6 +41,9 @@ final class MIDIHub {
     private let lock = NSLock()
 
     struct Event { let port: String; let bytes: [UInt8]; let time: Double; let sysex: Bool }
+    // This process, for the background: sequence numbers mean nothing in
+    // another one.
+    static let session = UUID().uuidString
     // Received messages, numbered; `base` is the number of events[0].
     private var events: [Event] = []
     private var base = 0
@@ -59,6 +66,11 @@ final class MIDIHub {
     private let sendQueue = DispatchQueue(label: "webmidi.send", qos: .userInteractive)
     private var timer: DispatchSourceTimer?
     static let horizon = 0.020
+    // The furthest ahead a send can be timed: a century.  The host clock
+    // holds 584 years at one tick a nanosecond, and 1e100 ms, which a page
+    // may pass, trapped converting to it and took the process down for
+    // every tab (the audit, 2026-09-27).
+    static let maxAheadMs = 100 * 365.25 * 86_400_000.0
     // Chromium's kMaxInFlightBytes, per page; and a ceiling for all of them.
     static let maxHeldPerClient = 10 << 20
     static let maxHeldTotal = 64 << 20
@@ -89,8 +101,12 @@ final class MIDIHub {
     static func hostToNanos(_ h: UInt64) -> Double {
         Double(h) * Double(timebase.numer) / Double(timebase.denom)
     }
+    // Never traps: nothing, a negative or NaN is 0, and what the clock
+    // cannot hold is its last tick.
     static func nanosToHost(_ n: Double) -> UInt64 {
-        UInt64(max(0, n) * Double(timebase.denom) / Double(timebase.numer))
+        guard n > 0 else { return 0 }
+        let h = n * Double(timebase.denom) / Double(timebase.numer)
+        return h < 0x1p64 ? UInt64(h) : .max
     }
     static func wallMillis() -> Double { Date().timeIntervalSince1970 * 1000 }
     // Wall clock minus host clock, in nanoseconds, read once and reused:
@@ -246,6 +262,7 @@ final class MIDIHub {
         let slice = from < end ? events[(from - base)...] : []
         return [
             "seq": end,
+            "session": MIDIHub.session,
             "gen": cachedGen,
             "lost": since >= 0 && since < base,
             "events": slice.filter { sysex || !$0.sysex }.map {
@@ -337,9 +354,10 @@ final class MIDIHub {
         sendQueue.async { [self] in
             timer?.cancel(); timer = nil
             guard let next = next else { return }
+            // At most an hour: a send timed far ahead gets the timer set again.
             let wait = max(0, MIDIHub.hostToNanos(next) - MIDIHub.hostToNanos(mach_absolute_time())) / 1e9 - MIDIHub.horizon
             let t = DispatchSource.makeTimerSource(queue: sendQueue)
-            t.schedule(deadline: .now() + max(0, wait), leeway: .microseconds(500))
+            t.schedule(deadline: .now() + min(max(0, wait), 3600), leeway: .microseconds(500))
             t.setEventHandler { [weak self] in self?.release() }
             t.resume()
             timer = t
@@ -392,7 +410,8 @@ final class MIDIHub {
                       let data = Data(base64Encoded: b64) else { continue }
                 let bytes = [UInt8](data)
                 let at = m.count > 2 ? (m[2] as? NSNumber)?.doubleValue ?? 0 : 0
-                guard !bytes.isEmpty, sysexAllowed || !bytes.contains(MIDIBytes.sysEx),
+                guard at.isFinite, at <= MIDIHub.wallMillis() + MIDIHub.maxAheadMs,
+                      !bytes.isEmpty, sysexAllowed || !bytes.contains(MIDIBytes.sysEx),
                       MIDIBytes.isValidWebMIDIData(bytes), let dest = destination(id) else {
                     failed.append(id); continue
                 }
@@ -408,7 +427,9 @@ final class MIDIHub {
             reply(["ok": true])
 
         case "recv":
-            let since = (req["since"] as? NSNumber)?.intValue ?? -1
+            var since = (req["since"] as? NSNumber)?.intValue ?? -1
+            // A cursor read in an earlier process: everything here came after it.
+            if since >= 0, let s = req["session"] as? String, s != MIDIHub.session { since = 0 }
             let gen = req["gen"] as? String
             let sysex = req["sysex"] as? Bool ?? false
             let wait = min(max((req["wait"] as? NSNumber)?.intValue ?? 0, 0), 5000)
