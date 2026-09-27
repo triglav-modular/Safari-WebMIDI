@@ -398,7 +398,7 @@ browser.runtime.onMessage.addListener(function (msg, sender) {
     case 'grants': return grants(!!msg.incognito);
     case 'pending': {
         var p = pending.get(msg.tabId);
-        return Promise.resolve(p ? { id: p.id, site: p.site, sysex: p.sysex } : null);
+        return Promise.resolve(p ? { id: p.id, site: p.site, origin: p.origin, sysex: p.sysex } : null);
     }
     // True if it answered the question it names; false if that question has
     // gone or been replaced, and the popup shows the one asked now.

@@ -5,19 +5,23 @@ var TEXT = {
     midi: 'Can use your MIDI devices',
     blocked: 'Blocked from your MIDI devices',
     notAsked: 'Has not asked to use MIDI',
+    unanswered: 'Asked, not yet answered',
     forget: 'Reset',
     all: 'Sites',
-    none: 'No site has asked yet.',
+    none: 'No site has been allowed or blocked yet.',
     askMidi: 'Allow \u201c{site}\u201d to use your MIDI devices?',
     askSysex: 'Allow \u201c{site}\u201d to control and reprogram your MIDI devices?',
     askSysexDetail: 'This lets the site change your devices\u2019 settings and firmware.',
     allow: 'Allow',
     block: 'Don\u2019t Allow'
 };
-// A site that may use MIDI but refused sysex can still use MIDI.
+// A site that may use MIDI but refused sysex can still use MIDI.  One kept
+// only for its dismissals asked, and had no answer.
+function decided(o) { return !!(o && (o.midi || o.sysex)); }
 function stateOf(o) {
     if (o && o.embargo && o.embargo > Date.now()) return TEXT.blocked;
-    if (!o || (!o.midi && !o.sysex)) return TEXT.notAsked;
+    if (!o) return TEXT.notAsked;
+    if (!decided(o)) return TEXT.unanswered;
     if (o.sysex === 'granted') return TEXT.sysex;
     if (o.midi === 'granted') return TEXT.midi;
     return TEXT.blocked;
@@ -37,7 +41,7 @@ function ask(tab) {
     return browser.runtime.sendMessage({ type: 'pending', tabId: tab.id }).then(function (p) {
         var box = document.getElementById('ask');
         box.hidden = !p;
-        if (!p) { shownId = null; return; }
+        if (!p) { shownId = null; return null; }
         document.getElementById('askQuestion').textContent = (p.sysex ? TEXT.askSysex : TEXT.askMidi).replace('{site}', p.site);
         var detail = document.getElementById('askDetail');
         detail.hidden = !p.sysex;
@@ -61,6 +65,7 @@ function ask(tab) {
         }
         yes.onclick = function () { decide('allow'); };
         no.onclick = function () { decide('block'); };
+        return p;
     });
 }
 // The background says when the question changes (asked, replaced, answered
@@ -76,15 +81,17 @@ function draw() {
     browser.tabs.query({ active: true, currentWindow: true }).then(function (tabs) {
         var tab = tabs && tabs[0];
         privateTab = !!(tab && tab.incognito);
-        ask(tab);
-        return Promise.all([browser.runtime.sendMessage({ type: 'grants', incognito: privateTab }), tab]);
+        return Promise.all([browser.runtime.sendMessage({ type: 'grants', incognito: privateTab }), tab, ask(tab)]);
     }).then(function (r) {
-        var grants = r[0] || {}, tab = r[1];
+        var grants = r[0] || {}, tab = r[1], asking = r[2];
         var here = null;
         try { here = tab && tab.url ? new URL(tab.url) : null; } catch (e) {}
         var box = document.getElementById('here');
-        if (here && /^https?:$/.test(here.protocol)) {
-            box.hidden = false;
+        // A site asking now with nothing decided is the question above; a
+        // line under it saying the site had not asked was wrong.
+        var askingHere = !!(asking && here && asking.origin === here.origin && !decided(grants[here.origin]));
+        box.hidden = !(here && /^https?:$/.test(here.protocol)) || askingHere;
+        if (!box.hidden) {
             document.getElementById('hereSite').textContent = here.host;
             document.getElementById('hereState').textContent = stateOf(grants[here.origin]);
             var b = document.getElementById('hereForget');

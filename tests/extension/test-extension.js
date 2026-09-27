@@ -160,6 +160,8 @@ function content(secure) {
         const q = () => els.askQuestion.textContent;
         check('the popup shows the question', !els.ask.hidden && /to use your MIDI devices/.test(q()), q());
         check('its buttons wait at first', els.askAllow.disabled && els.askBlock.disabled);
+        const line = e => e.hereState ? e.hereState.textContent : '';
+        check('and no line under it says the site has not asked', els.here.hidden, line(els));
         els.askAllow.onclick();
         await sleep(50);
         check('and a click that comes anyway does nothing', (await b.pending()) !== null && !b.store.grants[SITE]);
@@ -181,6 +183,8 @@ function content(secure) {
         await sleep(50);
         check('Allow then answers it', (await upgraded).ok === true && b.store.grants[SITE].sysex === 'granted', b.store.grants);
         check('and the popup puts the question away', els.ask.hidden);
+        await sleep(150);
+        check('the site’s line then says what it may do', !els.here.hidden && /control and reprogram/.test(line(els)), line(els));
 
         // Told, it redraws at once.
         b.drop = false;
@@ -189,7 +193,22 @@ function content(secure) {
         await sleep(50);
         check('a popup that is told redraws with the new question', !els.ask.hidden && /to use your MIDI devices/.test(q()) &&
               els.askAllow.disabled, q());
+        check('and hides the site’s line again', els.here.hidden, line(els));
         await basic;
+
+        // A site asking for sysex that may already use MIDI keeps its line.
+        const more = background({ grants: { [SITE]: { midi: 'granted' } } });
+        more.call({ type: 'request', sysex: true, doc: 'd1' });
+        await turn();
+        const els2 = popup(more);
+        await sleep(50);
+        check('a site asking for more keeps the line saying what it may do now',
+              !els2.ask.hidden && !els2.here.hidden && /^Can use/.test(line(els2)), line(els2));
+
+        // One that asked and was dismissed, asking nothing now.
+        const els3 = popup(background({ grants: { [SITE]: { dismissed: 1 } } }));
+        await sleep(50);
+        check('a site dismissed is not said to have not asked', !els3.here.hidden && /^Asked/.test(line(els3)), line(els3));
     });
 
     // --- 2. insecure documents get nothing ------------------------------------------
