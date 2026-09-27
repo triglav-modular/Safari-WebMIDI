@@ -14,8 +14,12 @@
   h1 { font-size: 13px; margin: 0 0 6px; }
   h2 { font-size: 11px; font-weight: 600; color: var(--muted); margin: 0 0 6px; text-transform: uppercase; letter-spacing: .02em; }
   .row { display: flex; align-items: center; gap: 8px; justify-content: space-between; margin: 4px 0; }
+  /* The text takes what the button leaves: a long state wraps, a long
+     host is cut short, and Reset stays whole. */
+  .row > :first-child { min-width: 0; }
+  .row > button { flex-shrink: 0; }
   .site { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .state { color: var(--muted); white-space: nowrap; }
+  .state { color: var(--muted); }
   /* Transparent page: Safari's popover glass is the background. */
   html { background: transparent; }
   button { font: inherit; border: 0; border-radius: 999px; padding: 3px 12px; background: var(--btn); color: var(--fg); cursor: pointer;
