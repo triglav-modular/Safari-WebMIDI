@@ -59,6 +59,14 @@ page ── shim.js (page world) ──MessageChannel── content.js (isolated
   else while the popup is open, the popup redraws, and a question just
   shown takes no click for half a second. A question goes, deciding
   nothing, when the documents that asked it go or the tab leaves the site.
+- **The toolbar button** looks like Safari's own buttons, and takes the
+  accent colour on a tab whose page is using Web MIDI (a document there has
+  access and has not gone). Safari draws a grey extension icon in the
+  accent colour on every page the extension may read, which for this one is
+  every page, and an icon in colour as it is. So the button is Safari's
+  `labelColor` (black or white at 85%, as the manifest's `icon_variants` for
+  light and dark) with just enough blue in it to count as colour, and a tab
+  using MIDI gets the grey glyph instead (`tools/make-icons.swift`).
 - **Safari unloads the background** 30 s after the last message reaches it
   (WebKit's `WebExtensionContext::unloadBackgroundContentIfPossible`); a
   reply it still owes does not count. The question waiting for the person

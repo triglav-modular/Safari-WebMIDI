@@ -13,7 +13,7 @@ swiftc -O "$ROOT/tools/make-icons.swift" -o "$B/obj/make-icons"
 rm -rf "$B/icons"
 "$B/obj/make-icons" "$ROOT/icon.ai" "$B/icons"
 cp "$ROOT/extension/"{manifest.json,background.js,shim.js,popup.html,popup.js} "$R/"
-cp "$B/icons/"toolbar-{16,19,32,38}.png "$B/icons/"icon-{48,64,96,128,256,512}.png "$R/icons/"
+cp "$B/icons/"toolbar-{,light-,dark-}{16,19,32,38}.png "$B/icons/"icon-{48,64,96,128,256,512}.png "$R/icons/"
 /usr/bin/python3 - "$ROOT/extension/content.js" "$ROOT/extension/shim.js" "$B/icons/icon-64.png" "$R/content.js" <<'PY'
 import base64, json, sys
 content, shim, icon, out = sys.argv[1:5]

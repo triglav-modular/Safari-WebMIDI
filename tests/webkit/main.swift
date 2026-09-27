@@ -107,7 +107,8 @@ var browser = {
   action: {
     openPopup: function () { return window.webkit.messageHandlers.openPopup.postMessage({}); },
     setBadgeText: function (o) { __badge = o.text; },
-    setBadgeBackgroundColor: function () {}
+    setBadgeBackgroundColor: function () {},
+    setIcon: function () { return Promise.resolve(); }
   },
   // A window of the extension's own: a web view beside the popup's.
   windows: {

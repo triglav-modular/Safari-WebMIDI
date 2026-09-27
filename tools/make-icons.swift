@@ -2,7 +2,9 @@ import AppKit
 import PDFKit
 
 // Icons from icon.ai (a PDF-compatible Illustrator file):
-//   glyph PNGs    the glyph alone, for Safari's toolbar
+//   glyph PNGs    the glyph alone, for Safari's toolbar: as its own buttons
+//                 in light and dark, and grey, which Safari draws in the
+//                 accent colour, while a tab uses Web MIDI
 //   tile PNGs     the glyph in white on a black macOS-style rounded square,
 //                 for Safari's list of extensions and for the .icns fallback
 //   AppIcon.icon  an Icon Composer icon: black fill, the white glyph as a
@@ -62,8 +64,28 @@ func tile(_ cg: CGContext, _ s: CGFloat) {
 let glyphWhite = CGColor(srgbRed: 1, green: 245.0 / 255, blue: 225.0 / 255, alpha: 1)
 func write(_ name: String, _ data: Data) { try! data.write(to: out.appendingPathComponent(name)) }
 
+// The toolbar button.  Safari 27 draws a grey icon (above) in the accent
+// colour wherever the extension may read the page, which for this one is
+// every page, and in labelColor, as its own buttons, only where it may
+// not; an icon in colour it draws as it is (-[ExtensionButton setImage:],
+// -[WebExtensionToolbarItem updateExtensionIconForBrowserWindowController:]).
+// So the glyph in grey, toolbar-N, is the accent, for a tab whose page is
+// using Web MIDI (background.js).  The button otherwise is labelColor
+// itself, black or white at 85%, for light and dark (the manifest's
+// icon_variants), with just enough blue taken from or added to it to count
+// as colour.  Measured on this glyph with safari_isGrayscale, which
+// averages the image down first: 28 levels of blue passed for grey at 85%,
+// 32 did not.
+let toolbarBlue: CGFloat = 36.0 / 255
 for s in [16, 19, 32, 38, 48, 64] {
-    write("toolbar-\(s).png", render(s) { cg, s in glyph(cg, in: CGRect(x: 0, y: 0, width: s, height: s)) })
+    let r = CGRect(x: 0, y: 0, width: s, height: s)
+    write("toolbar-\(s).png", render(s) { cg, _ in glyph(cg, in: r, white: true, color: CGColor(gray: 0, alpha: 1)) })
+    write("toolbar-light-\(s).png", render(s) { cg, _ in
+        glyph(cg, in: r, white: true, color: CGColor(srgbRed: 0, green: 0, blue: toolbarBlue, alpha: 0.85))
+    })
+    write("toolbar-dark-\(s).png", render(s) { cg, _ in
+        glyph(cg, in: r, white: true, color: CGColor(srgbRed: 1, green: 1, blue: 1 - toolbarBlue, alpha: 0.85))
+    })
 }
 for s in [48, 64, 96, 128, 256, 512] { write("icon-\(s).png", render(s, tile)) }
 // The touch icon: black to the edges and square; iOS rounds it itself.

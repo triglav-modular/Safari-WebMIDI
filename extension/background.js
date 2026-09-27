@@ -216,7 +216,42 @@ function showBadge(tabId, on) {
         if (on) browser.action.setBadgeBackgroundColor({ tabId: tabId, color: '#FFDA6C' });
     } catch (e) {}
 }
+// --- the toolbar button --------------------------------------------------------
+// Coloured like Safari's own buttons (the manifest's icon_variants), and in
+// the accent colour on a tab whose page is using Web MIDI: a document there
+// has access, and has not gone.  The accent is Safari's: it draws a grey
+// icon in it wherever the extension may read the page (make-icons.swift).
+// A document with access receives for as long as it lives (shim.js), and
+// each receive marks it again, so a background unloaded and started again
+// soon knows it.  That background knows nothing of a tab it drew before, so
+// a document going always redraws its tab's button.
+var ACCENT = { 16: 'icons/toolbar-16.png', 19: 'icons/toolbar-19.png', 32: 'icons/toolbar-32.png', 38: 'icons/toolbar-38.png' };
+var using = new Map();     // tabId -> Map(client -> { origin, incognito })
+function drawButton(tabId) {
+    // No path: the tab's button goes back to the manifest's.
+    Promise.resolve().then(function () { return browser.action.setIcon({ tabId: tabId, path: using.has(tabId) ? ACCENT : null }); })
+        .catch(function () {});
+}
+function use(tabId, client, from) {
+    var m = using.get(tabId);
+    if (!m) { using.set(tabId, m = new Map()); drawButton(tabId); }
+    m.set(client, { origin: from.origin, incognito: from.incognito });
+}
+function unuse(tabId, client) {
+    var m = using.get(tabId);
+    if (m && m.delete(client) && !m.size) using.delete(tabId);
+    drawButton(tabId);
+}
+// A site reset in the popup has no access left, whatever it had.
+function revoked(origin, incognito) {
+    using.forEach(function (m, tabId) {
+        m.forEach(function (u, client) { if (u.origin === origin && u.incognito === incognito) m.delete(client); });
+        if (!m.size) { using.delete(tabId); drawButton(tabId); }
+    });
+}
+
 browser.tabs.onRemoved.addListener(function (tabId) {
+    using.delete(tabId);
     var p = pending.get(tabId);
     if (p) p.resolve('dismiss');
     floors.forEach(function (v, k) { if (k.indexOf(tabId + ':') === 0) floors.delete(k); });
@@ -229,10 +264,11 @@ browser.tabs.onUpdated.addListener(function (tabId, change) {
     if (origin !== p.origin) p.resolve('cancel');
 });
 // A document has gone (content.js, on pagehide): its question, its place in
-// the input and its policy go with it.
+// the input, its policy and its use of MIDI go with it.
 function gone(sender, doc) {
     if (!sender.tab || !doc) return;
     var client = clientOf(sender, doc);
+    unuse(sender.tab.id, client);
     var p = pending.get(sender.tab.id);
     if (p && p.askers.delete(client) && !p.askers.size) p.resolve('cancel');
     floors.delete(client);
@@ -379,6 +415,7 @@ function native(sender, req, doc) {
         if (from.error) return { error: from.error };
         return grants(from.incognito).then(function (g) {
             if (!granted(g, from.origin, false)) return { error: NOT_ALLOWED };
+            if (sender.tab) use(sender.tab.id, client, from);
             var cmd = { cmd: req.cmd };
             var sysex = granted(g, from.origin, true);
             switch (req.cmd) {
@@ -478,7 +515,7 @@ browser.runtime.onMessage.addListener(function (msg, sender) {
     case 'forget':
         return ['midi', 'sysex', 'dismissed', 'embargo'].reduce(function (chain, kind) {
             return chain.then(function () { return setGrant(msg.origin, kind, null, !!msg.incognito); });
-        }, Promise.resolve()).then(function () { return { ok: true }; });
+        }, Promise.resolve()).then(function () { revoked(msg.origin, !!msg.incognito); return { ok: true }; });
     }
     return undefined;
 });

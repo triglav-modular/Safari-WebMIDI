@@ -34,7 +34,7 @@ const PORTS = () => ({ gen: 'g', inputs: [], outputs: [] });
 function background(o = {}) {
     let listener;
     const b = { store: { grants: o.grants || {} }, toPopup: [], toTab: [], onUpdated: [], nativeCalls: 0, popup: null, drop: false,
-                popupOpens: 0, windows: [], removed: [] };
+                popupOpens: 0, windows: [], removed: [], icons: [] };
     const browser = {
         runtime: {
             onMessage: { addListener(fn) { listener = fn; } },
@@ -53,12 +53,13 @@ function background(o = {}) {
         tabs: {
             query: async () => [],
             sendMessage: async (tabId, msg) => { b.toTab.push(msg); return msg.type === 'policy' && o.policy ? o.policy(msg) : undefined; },
-            onRemoved: { addListener() {} },
+            onRemoved: { addListener(fn) { b.onRemoved = fn; } },
             onUpdated: { addListener(fn) { b.onUpdated.push(fn); } }
         },
         // openPopup does what `o.openPopup` says: by default nothing, as if
         // the popup opened and asked nothing.
-        action: { openPopup: async () => { b.popupOpens++; if (o.openPopup) return o.openPopup(b); }, setBadgeText() {}, setBadgeBackgroundColor() {} },
+        action: { openPopup: async () => { b.popupOpens++; if (o.openPopup) return o.openPopup(b); }, setBadgeText() {}, setBadgeBackgroundColor() {},
+                  setIcon: async d => { b.icons.push(d.tabId + (d.path === null ? ' plain' : /toolbar-16/.test(d.path[16]) ? ' accent' : ' ?')); } },
         windows: {
             create: async w => { b.windows.push(w); return { id: 100 + b.windows.length }; },
             update: async id => { if (b.removed.includes(id)) throw new Error('No window with id: ' + id); },
@@ -461,6 +462,53 @@ function content(secure, reply) {
         check('after a restart the floor is the new process’s start', asked[3][0] === 3 && asked[3][1] === 'S2', asked[3]);
         await recv(0, 'new since');
         check('a page new since then still reads only from now', asked[4][0] === -1, asked[4]);
+    });
+
+    // --- 6. the toolbar button ---------------------------------------------------------
+    // Plain, and in the accent colour on a tab whose page is using Web MIDI.
+    await section('the toolbar button', async () => {
+        const OTHER = 'https://other.example';
+        const other = { url: OTHER + '/', frameId: 0, tab: { id: 2, url: OTHER + '/' } };
+        const answer = () => ({ seq: 0, session: 'S', gen: 'g', events: [], inputs: [], outputs: [] });
+        let b = background({ grants: { [SITE]: { midi: 'granted' } }, native: answer });
+        const recv = (doc, sender = page) => b.call({ type: 'native', doc, req: { cmd: 'recv', since: -1, wait: 0 } }, sender);
+        const last = tab => b.icons.filter(i => i.startsWith(tab + ' ')).pop();
+        await b.call({ type: 'permission', sysex: false, doc: 'd' });
+        check('a page that has not asked leaves the button plain', !b.icons.length, b.icons);
+        await b.call({ type: 'native', doc: 'd', req: { cmd: 'ports' } });
+        await turn();
+        check('a page with MIDI access turns its tab’s button to the accent', last(1) === '1 accent', b.icons);
+        const drawn = b.icons.length;
+        await recv('d'); await recv('d'); await turn();
+        check('each receive after that draws nothing', b.icons.length === drawn, b.icons);
+        await recv('d', other);
+        await turn();
+        check('a site without access leaves its tab plain', last(2) === undefined, b.icons);
+        await recv('d2');                                         // a second document in the tab
+        await b.call({ type: 'gone', doc: 'd' });
+        await turn();
+        check('the tab keeps the accent while another of its documents uses MIDI', last(1) === '1 accent', b.icons);
+        await b.call({ type: 'gone', doc: 'd2' });
+        await turn();
+        check('the tab goes plain when its last document using MIDI goes', last(1) === '1 plain', b.icons);
+        await recv('d3');
+        await b.call({ type: 'forget', origin: SITE, incognito: false }, POPUP);
+        await turn();
+        check('resetting the site in the popup turns its tab plain', last(1) === '1 plain', b.icons);
+        await recv('d3');
+        await turn();
+        check('and its next receive, refused, leaves it plain', last(1) === '1 plain', b.icons);
+        // A background started again knows nothing of a tab drawn before.
+        b = background({ grants: { [SITE]: { midi: 'granted' } }, native: answer });
+        await b.call({ type: 'gone', doc: 'd4' });
+        await turn();
+        check('a document going redraws its tab even if this background never drew it', last(1) === '1 plain', b.icons);
+        await recv('d5');
+        b.onRemoved(1);
+        const before = b.icons.length;
+        await recv('d6');                                         // were the tab's id used again
+        await turn();
+        check('a closed tab is forgotten', b.icons.length === before + 1 && last(1) === '1 accent', b.icons);
     });
 
     console.log(failed ? `${failed} FAILED` : 'ALL EXTENSION CHECKS PASSED');
