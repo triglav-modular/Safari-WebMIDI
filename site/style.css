@@ -178,6 +178,14 @@ section {
   margin-bottom: 20px;
 }
 section > p:last-child { margin-bottom: 0; }
+h3 {
+  font-size: 17px;
+  font-weight: 700;
+  margin: 26px 0 6px;
+}
+h2 + h3 { margin-top: 0; }
+h3 + p { margin-top: 0; }
+code { font: .9em ui-monospace, SFMono-Regular, Menlo, monospace; }
 h2 {
   font-size: 20px;
   text-transform: uppercase;

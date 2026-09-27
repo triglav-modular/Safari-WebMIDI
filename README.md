@@ -4,6 +4,8 @@ Safari has no Web MIDI API, and WebKit has said it will not ship one. This is
 a Safari web extension that supplies it: `navigator.requestMIDIAccess()` and
 the rest of the API, backed by CoreMIDI, behind a per-site permission prompt.
 
+**Download and install:** <https://triglavmodular.hu/mods/safari-webmidi/>
+
 It is a port of **Chromium's** implementation, so a site gets what it gets
 in Chrome:
 
@@ -179,6 +181,11 @@ What these cannot reach is Safari's own plumbing (the extension store,
 `.github/workflows/pages.yml`, and served at
 <https://triglavmodular.hu/mods/safari-webmidi/> by the worker in `deploy/`
 (`npx wrangler deploy`).
+
+The link preview, `site/images/og-card.png`, is drawn by
+`python3 tools/make-og-card.py` (Pillow) and committed. Redraw it when the
+app icon, the wave or the page's `--bg` changes, and put the stamp it prints
+on `og:image`.
 
 The download is the newest GitHub release's disk image: the page links to
 `releases/latest/download/Web-MIDI.dmg`, and the worker sends the old

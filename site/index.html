@@ -18,7 +18,34 @@
     <meta property="og:url" content="https://triglavmodular.hu/mods/safari-webmidi/">
     <meta property="og:title" content="Web MIDI for Safari">
     <meta property="og:description" content="A small extension that adds Web MIDI support to Safari so sites can talk to your synths.">
-    <meta property="og:image" content="https://triglavmodular.hu/mods/safari-webmidi/icons/app-icon.png">
+    <!-- Drawn by tools/make-og-card.py; the stamp is the file's hash. -->
+    <meta property="og:image" content="https://triglavmodular.hu/mods/safari-webmidi/images/og-card.png?v=c69936f1">
+    <meta property="og:image:type" content="image/png">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta property="og:image:alt" content="The Web MIDI app icon, a MIDI socket drawn in white on a black rounded square, centred on a dark ground.">
+    <meta name="twitter:card" content="summary_large_image">
+    <!-- For search engines.  No version and no ratings: the version is kept
+         on the page's version line (tools/release.sh reads it there), and
+         there are no ratings to give. -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "SoftwareApplication",
+      "name": "Web MIDI for Safari",
+      "alternateName": "Safari Web MIDI",
+      "description": "A Safari extension that adds the Web MIDI API to Safari on the Mac, ported from Chromium.",
+      "url": "https://triglavmodular.hu/mods/safari-webmidi/",
+      "image": "https://triglavmodular.hu/mods/safari-webmidi/icons/app-icon.png",
+      "applicationCategory": "BrowserApplication",
+      "operatingSystem": "macOS",
+      "downloadUrl": "https://github.com/triglav-modular/Safari-WebMIDI/releases/latest/download/Web-MIDI.dmg",
+      "isAccessibleForFree": true,
+      "offers": { "@type": "Offer", "price": "0", "priceCurrency": "EUR" },
+      "author": { "@type": "Organization", "name": "Triglav Modular", "url": "https://triglavmodular.hu/" },
+      "sameAs": "https://github.com/triglav-modular/Safari-WebMIDI"
+    }
+    </script>
     <link rel="stylesheet" href="style.css">
   </head>
   <body>
@@ -68,8 +95,19 @@
 
       <section>
         <h2>How it works</h2>
+        <p>Safari has no Web MIDI API: WebKit has declined to ship one, citing fingerprinting. This extension adds it, <code>navigator.requestMIDIAccess()</code> and the rest of the API, so sites that play, edit or sequence your synths work in Safari too.</p>
         <p>Safari Web MIDI is a port of Chromium’s implementation of the Web MIDI API, so sites behave as they do in Chrome. It talks to your devices through Core MIDI, the Mac’s own MIDI system.</p>
         <p>Free to use. The source is on <a href="https://github.com/triglav-modular/Safari-WebMIDI">GitHub</a>.</p>
+      </section>
+
+      <section>
+        <h2>Questions</h2>
+        <h3>Does it work on iPhone or iPad?</h3>
+        <p>No. It runs in Safari on the Mac only.</p>
+        <h3>Which sites does it work with?</h3>
+        <p>Any site that uses the Web MIDI API: patch editors and librarians, sequencers, controllers, test pages. SysEx works too. A site that wants it gets a question of its own, since SysEx can change a device’s settings and firmware.</p>
+        <h3>Can any site use my MIDI devices?</h3>
+        <p>Only the sites you allow. When a site asks, the Web MIDI button in Safari’s toolbar shows a badge: click it and choose Allow or Don’t Allow. The question is asked there rather than in the page, so a page cannot hide or restyle it. The same popup lists every site you have answered, and Reset takes an answer back.</p>
       </section>
     </div>
   </body>
