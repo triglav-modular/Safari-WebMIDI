@@ -303,13 +303,13 @@ function loopOf(access) {
     eq(seen.join(), [...Array(64).keys()].join());
   });
   // What reached the loop's destination at or after `from`, as [ms, status,
-  // data1, data2], all on the harness's clock (its uptime): `from` comes from
-  // harness('mark').  Never compared with the page's clock, which can run
+  // data1, data2, CoreMIDI's time for it], all on the harness's clock (its
+  // uptime): `from` comes from harness('mark').  Never compared with the page's clock, which can run
   // tens of milliseconds apart from the wall clock (a CI runner's did).
   const mark = () => harness('mark');
   async function arrivalsSince(from) {
     const list = await harness('arrivals', { from });
-    return list.map(([ms, w]) => [ms, (w >>> 16) & 0xff, (w >>> 8) & 0xff, w & 0xff]);
+    return list.map(([ms, w, stamp]) => [ms, (w >>> 16) & 0xff, (w >>> 8) & 0xff, w & 0xff, stamp]);
   }
   // The 218e calibration sweep's pattern, with an input open as the sweep
   // has: note-off, 60 ms, note-on, then listening.  Safari runs one native
@@ -354,6 +354,32 @@ function loopOf(access) {
     eq(got.length, n, 'arrived (missing ' + (missing.length > 12 ? missing.slice(0, 6).join(' ') + ' ... ' + missing.slice(-6).join(' ') : missing.join(' ')) +
        '; refused ' + safari.refusals + ', failed at the hub ' + safari.sendFailures + ', packets holding several ' + safari.sharedPackets + ')');
     eq(got.map(a => a[2] * 128 + a[3]).join(), [...Array(n).keys()].join());
+  });
+  // A page that paces its sends, as the 218e settings push does: bursts of
+  // 16 made a few ms apart, so the instrument's 32-packet receive ring can
+  // drain.  Safari takes one native request at a time, so the extension gets
+  // them in batches, and sent back to back a batch arrived in runs of up to
+  // 80 (2026-09-27).  CoreMIDI's time for each send says when it was meant
+  // to go, whatever the runner's load made of its arrival: each burst's must
+  // be the page's gap after the one before (at least 4 ms here).
+  await test('a batch of sends keeps the page\u2019s spacing', async () => {
+    loop.inp.onmidimessage = () => {};
+    const m0 = await mark(), bursts = 40;
+    for (let k = 0; k < bursts; k++) {
+      for (let i = 0; i < 16; i++) loop.out.send([0xb4, k, i]);
+      await sleep(4);
+    }
+    let got = [];
+    for (let t = 0; t < 50 && got.length < bursts * 16; t++) {
+      await sleep(100);
+      got = (await arrivalsSince(m0)).filter(a => a[1] === 0xb4);
+    }
+    const ids = got.map(a => a[2] * 16 + a[3]), wrong = ids.findIndex((x, i) => x !== i);
+    assert(ids.length === bursts * 16 && wrong < 0, ids.length + ' of ' + bursts * 16 + ' arrived' + (wrong < 0 ? '' : ', out of order from ' +
+      got.slice(Math.max(0, wrong - 2), wrong + 6).map(a => (a[2] * 16 + a[3]) + '@' + a[4].toFixed(2)).join(' ')));
+    const first = [...Array(bursts).keys()].map(k => got[k * 16][4]);
+    const gaps = first.slice(1).map((t, k) => t - first[k]);
+    assert(gaps.every(g => g >= 3), 'bursts went ' + gaps.map(g => g.toFixed(1)).join(' ') + ' ms apart');
   });
   await test('a send Safari refuses is tried again, not lost', async () => {
     loop.inp.onmidimessage = () => {};

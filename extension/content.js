@@ -165,7 +165,7 @@
                 native({ cmd: 'ports' }).then(done, fail);
                 break;
             case 'send':
-                native({ cmd: 'send', msgs: (args.msgs || []).map(function (q) { return [q[0], toBase64(q[1]), q[2] || 0]; }) })
+                native({ cmd: 'send', msgs: (args.msgs || []).map(function (q) { return [q[0], toBase64(q[1]), q[2] || 0, q[3] || 0]; }) })
                     .then(done, fail);
                 break;
             case 'clear':

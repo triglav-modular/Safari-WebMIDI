@@ -65,6 +65,13 @@ page ── shim.js (page world) ──MessageChannel── content.js (isolated
   25 in hand, sends first, and tries a refused one again. A page's sends
   and clears go in the order it made them, so a refused send tried again
   cannot land after a `clear()` made behind it.
+- **The page's spacing.** At 20 requests a second, the sends a page makes
+  while one request is in flight go together in the next. Sent back to
+  back, they arrived in runs of up to 80, more than a 218e's 32-packet
+  receive ring holds, where the page had paced them 16 at a time. Each send
+  carries the time the page made it, and MIDIHub gives CoreMIDI each one the
+  page's own gap after the send before it to that port. A gap over 20 ms may
+  shrink to 20, which sheds a delay built up in a busy stretch.
 
 ## Where it follows the spec rather than Chrome
 
@@ -138,7 +145,7 @@ fails.
 ./tools/test-hub.sh
 ```
 
-MIDIHub against a virtual CoreMIDI loop: order, sysex up to 10 kB, timestamps,
+MIDIHub against a virtual CoreMIDI loop: order, sysex up to 10 kB, timestamps, the page's spacing,
 `clear()`, port changes.
 
 ```bash

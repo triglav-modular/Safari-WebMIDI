@@ -380,11 +380,14 @@
             }
             // Blink: 0 means now; anything else is relative to the time origin.
             var wall = ms === 0 ? 0 : wallFor(ms);
+            // When the call was made: the native side spaces sends without a
+            // time as the page made them (MIDIHub.spacedHost).
+            var page = pageNow();
             // Implicit open, even when the data turns out to be invalid.
             this.__open();
             validate(bytes, this.__access.__sysex);
-            if (this.__runningOpen) this.__pendingData.push([bytes, wall]);
-            else this.__access.__sendMIDIData(this, bytes, wall);
+            if (this.__runningOpen) this.__pendingData.push([bytes, wall, page]);
+            else this.__access.__sendMIDIData(this, bytes, wall, page);
         }
         // Not in Chrome (its IDL still has "TODO: implement void clear()");
         // the spec and Firefox have it.  Drops what has not been sent yet.
@@ -401,7 +404,7 @@
         this.__pendingData = [];
         if (!opened) return;
         var self = this;
-        queued.forEach(function (q) { self.__access.__sendMIDIData(self, q[0], q[1]); });
+        queued.forEach(function (q) { self.__access.__sendMIDIData(self, q[0], q[1], q[2]); });
     };
     Object.defineProperty(MIDIOutput.prototype, '__didOpen', { enumerable: false });
 
@@ -475,9 +478,9 @@
         if (announce) access.dispatchEvent(connectionEvent(port));
         return port;
     }
-    MIDIAccess.prototype.__sendMIDIData = function (port, bytes, wall) {
+    MIDIAccess.prototype.__sendMIDIData = function (port, bytes, wall, page) {
         if (!bytes.length) return;
-        hub.send(port.__id, bytes, wall);
+        hub.send(port.__id, bytes, wall, page);
     };
     // The system's port list now; ports are matched by id and never removed.
     MIDIAccess.prototype.__update = function (list) {
@@ -504,11 +507,11 @@
         gen: null, cursor: -1, polling: false, queue: [], inflight: false, unacked: 0,
         // MIDIDispatcher's kMaxUnacknowledgedBytesSent.
         MAX_UNACKED: 10 * 1024 * 1024,
-        send: function (id, bytes, wall) {
+        send: function (id, bytes, wall, page) {
             if (this.MAX_UNACKED - this.unacked < bytes.length) return;
             this.lastSend = root.performance.now();
             this.unacked += bytes.length;
-            this.queue.push([id, bytes, wall]);
+            this.queue.push([id, bytes, wall, page]);
             this.flush();
         },
         // What clear() takes out of the queue was counted against

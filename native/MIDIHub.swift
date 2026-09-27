@@ -74,6 +74,11 @@ final class MIDIHub {
     // Chromium's kMaxInFlightBytes, per page; and a ceiling for all of them.
     static let maxHeldPerClient = 10 << 20
     static let maxHeldTotal = 64 << 20
+    // Sends without a time keep the page's spacing (spacedHost), per client
+    // and port: the page time and host time of the last one.
+    private var paced: [String: (page: Double, host: UInt64)] = [:]
+    static let keepGapMs = 20.0
+    private let releasing = NSLock()
 
     static let keepEvents = 8192
     static let keepBytes = 4 << 20
@@ -311,11 +316,40 @@ final class MIDIHub {
         return true
     }
 
+    // When a send without a time goes.  Safari takes native requests one at
+    // a time, at most 20 a second, so a page's sends arrive here in batches:
+    // whatever it sent while the last request was in flight.  Sent back to
+    // back, a batch loses the page's spacing.  A 218e settings push paced as
+    // 16 messages every few ms arrived in runs of up to 80, and the 32-packet
+    // receive ring behind the keyboard's USB port dropped the rest; Chrome,
+    // which sends each call as it is made, kept the gaps (2026-09-27).  So
+    // each goes the page's own gap after the one before it to the same port,
+    // never sooner.  A gap longer than keepGapMs may shrink to keepGapMs:
+    // that is how a delay taken on in a busy stretch is shed again, and after
+    // a pause the next send goes at once.  It is given CoreMIDI as a time
+    // even when that is now: a send at time 0 overtook one given a time a
+    // moment before, and a burst came out as 352 356 353 354 357 355.
+    private func spacedHost(client: String, port: String, page: Double) -> UInt64 {
+        let now = mach_absolute_time()
+        let key = client + "\u{0}" + port
+        lock.lock(); defer { lock.unlock() }
+        var target = now
+        if let last = paced[key] {
+            let gap = min(max(0, page - last.page), MIDIHub.keepGapMs)
+            target = max(now, last.host + MIDIHub.nanosToHost(gap * 1e6))
+        }
+        if paced[key] == nil && paced.count >= 4096 { paced.removeAll() }
+        paced[key] = (page, target)
+        return target
+    }
+
     // Holds a timestamped send until `horizon` before it is due, then hands
     // it to CoreMIDI with its exact time.  Returns false when the client is
     // already holding its share.
     private func hold(_ words: [UInt32], to port: String, client: String, atWall ms: Double, bytes: Int) -> Bool {
-        let host = MIDIHub.hostTime(atWallMillis: ms)
+        hold(words, to: port, client: client, atHost: MIDIHub.hostTime(atWallMillis: ms), bytes: bytes)
+    }
+    private func hold(_ words: [UInt32], to port: String, client: String, atHost host: UInt64, bytes: Int) -> Bool {
         lock.lock()
         let mine = heldBytes[client, default: 0]
         guard mine + bytes <= MIDIHub.maxHeldPerClient, heldTotal + bytes <= MIDIHub.maxHeldTotal else {
@@ -337,6 +371,10 @@ final class MIDIHub {
     // sets the timer for the next.
     private func release() {
         let horizonHost = MIDIHub.nanosToHost(MIDIHub.horizon * 1e9)
+        // One release at a time, from taking what is due to handing it over:
+        // the timer's and a request's ran together, each with part of one
+        // burst, and CoreMIDI got them interleaved (240 251 241 242 252).
+        releasing.lock(); defer { releasing.unlock() }
         lock.lock()
         let now = mach_absolute_time()
         var due: [Held] = []
@@ -371,6 +409,7 @@ final class MIDIHub {
     // reset the instrument rather than cancel a note.
     private func clear(_ port: String, client: String) {
         lock.lock()
+        paced[client + "\u{0}" + port] = nil
         held.removeAll { item in
             guard item.port == port && item.client == client else { return false }
             heldBytes[item.client, default: 0] -= item.bytes
@@ -400,7 +439,8 @@ final class MIDIHub {
         case "send":
             // midi_host.cc's checks: sysex needs its grant, and the bytes must
             // be whole Web MIDI messages; anything else is dropped.  Sends
-            // without a time go now, after anything already due.
+            // without a time go after anything already due, spaced as the
+            // page made them (spacedHost) when it says when that was.
             let sysexAllowed = req["sysex"] as? Bool ?? false
             let client = req["client"] as? String ?? ""
             var failed: [String] = []
@@ -416,8 +456,11 @@ final class MIDIHub {
                     failed.append(id); continue
                 }
                 let words = UMP.translateMidiToUmpWords(bytes)
+                let page = m.count > 3 ? (m[3] as? NSNumber)?.doubleValue ?? 0 : 0
+                let spaced = at == 0 && page.isFinite && page > 0 ? spacedHost(client: client, port: id, page: page) : nil
                 let ok = at > 0 ? hold(words, to: id, client: client, atWall: at, bytes: bytes.count)
-                                : sendWords(words, to: dest, at: 0)
+                    : spaced.map { hold(words, to: id, client: client, atHost: $0, bytes: bytes.count) }
+                    ?? sendWords(words, to: dest, at: 0)
                 if !ok { failed.append(id) }
             }
             reply(["ok": failed.isEmpty, "failed": failed])

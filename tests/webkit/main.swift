@@ -39,7 +39,9 @@ var loops: [String: (MIDIEndpointRef, MIDIEndpointRef)] = [:]
 // not the wall clock: a CI runner's wall clock was corrected by tens of
 // milliseconds mid-run, and arrivals just after a mark were dated before it.
 func harnessMillis() -> Double { ProcessInfo.processInfo.systemUptime * 1000 }
-var arrivals: [(Double, UInt32)] = []
+// Each with the time CoreMIDI was given for it, in ms of host time: when a
+// send was meant to go, whatever the runner's load made of its arrival.
+var arrivals: [(Double, UInt32, Double)] = []
 var sharedPackets = 0
 let arrivalsLock = NSLock()
 // A loop: what reaches the destination comes back out of the source.
@@ -57,9 +59,10 @@ func plug(_ name: String) {
         for packet in list.unsafeSequence() {
             let n = Int(packet.pointee.wordCount)
             let words = UnsafeRawPointer(packet).advanced(by: wordsAt).assumingMemoryBound(to: UInt32.self)
+            let stamp = MIDIHub.hostToNanos(packet.pointee.timeStamp) / 1e6
             var i = 0, messages = 0
             while i < n {
-                arrivals.append((now, words[i]))
+                arrivals.append((now, words[i], stamp))
                 i += max(1, UMP.lengthInWords(words[i]))
                 messages += 1
             }
@@ -392,10 +395,11 @@ final class Harness: NSObject, WKScriptMessageHandlerWithReply, WKScriptMessageH
             // compares times on this one clock, never with the page's.
             reply(harnessMillis(), nil)
         case "arrivals":
-            // [ms, first UMP word] for everything that reached a loop since `from` ms.
+            // [ms, first UMP word, CoreMIDI's time in ms] for everything that
+            // reached a loop since `from` ms.
             let from = a["from"] as? Double ?? 0
             arrivalsLock.lock()
-            let list = arrivals.filter { $0.0 >= from }.map { [$0.0, Double($0.1)] }
+            let list = arrivals.filter { $0.0 >= from }.map { [$0.0, Double($0.1), $0.2] }
             arrivalsLock.unlock()
             reply(list, nil)
         case "safari":

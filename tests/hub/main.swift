@@ -160,6 +160,39 @@ DispatchQueue.global().async {
     check("clear() drops only its own page's sends", afterClear == 1, "\(afterClear) arrived")
     _ = collect(from: &cursor, count: 10, ms: 300)
 
+    // Sends without a time, batched as Safari delivers them, keep the page's
+    // spacing: four bursts of 16 made 5 ms apart, then one 100 ms after the
+    // last, all in one request.  The first burst goes now; the others are
+    // held for the time CoreMIDI is given, which comes back with the echo.
+    // A gap longer than 20 ms shrinks to 20 when the sends are behind.
+    let p0 = 1000.0
+    var paced: [[Any]] = []
+    for (k, gap) in [0.0, 5, 10, 15, 115].enumerated() {
+        for i in 0..<16 { paced.append([out, b64([0xB5, UInt8(k), UInt8(i)]), 0, p0 + gap]) }
+    }
+    _ = ask(["cmd": "send", "client": "P", "msgs": paced])
+    let echoed = collect(from: &cursor, count: 80, ms: 1500)
+    var stamps: [Int: [Double]] = [:]
+    for e in echoed { let b = unb64(e[1]); if b.count == 3 && b[0] == 0xB5 { stamps[Int(b[1]), default: []].append(e[2] as? Double ?? 0) } }
+    let burst = (0..<5).map { stamps[$0] ?? [] }
+    check("a batch of sends without a time all arrive", burst.map(\.count) == [16, 16, 16, 16, 16], "\(burst.map(\.count))")
+    let spread = burst.dropFirst().map { ($0.max() ?? 0) - ($0.min() ?? 0) }
+    let gaps = (1..<3).map { (burst[$0 + 1].first ?? 0) - (burst[$0].first ?? 0) }
+    check("each burst keeps its own time, 5 ms after the one before", spread.allSatisfy { $0 < 0.1 } && gaps.allSatisfy { abs($0 - 5) < 0.1 },
+          "gaps \(gaps.map { String(format: "%.2f", $0) }), spread \(spread)")
+    let shed = (burst[4].first ?? 0) - (burst[3].first ?? 0)
+    check("a 100 ms gap behind a backlog shrinks to 20 ms", abs(shed - 20) < 0.1, String(format: "%.2f ms", shed))
+    // After a pause the next send goes at once, not the page's gap after the last.
+    Thread.sleep(forTimeInterval: 0.3)
+    arrivalsLock.lock(); arrivals = []; arrivalsLock.unlock()
+    let sentAt = now()
+    _ = ask(["cmd": "send", "client": "P", "msgs": [[out, b64([0xB5, 9, 0]), 0, p0 + 5000]]])
+    Thread.sleep(forTimeInterval: 0.3)
+    arrivalsLock.lock(); let pauseArrival = arrivals.first; arrivalsLock.unlock()
+    check("after a pause a send without a time goes at once", pauseArrival.map { $0.0 - sentAt < 150 } ?? false,
+          pauseArrival.map { String(format: "%.1f ms", $0.0 - sentAt) } ?? "never arrived")
+    _ = collect(from: &cursor, count: 10, ms: 300)
+
     // No page can make the extension hold more than its share.
     var huge: [UInt8] = [0xf0]; huge += [UInt8](repeating: 0x11, count: 3 << 20); huge.append(0xf7)
     let far = now() + 60_000
