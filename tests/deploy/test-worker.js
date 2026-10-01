@@ -133,6 +133,54 @@ const CLICK = { 'sec-fetch-site': 'same-origin', 'sec-fetch-mode': 'navigate', '
     const binding = /\[\[kv_namespaces\]\]\s*\nbinding = "([^"]+)"\s*\nid = "[0-9a-f]{32}"/.exec(toml);
     check('wrangler.toml: binds the namespace the worker writes', binding && source.includes('env.' + binding[1] + '.put'), binding && binding[1]);
 
+    // Addresses other sites link to (the WEBMIDI.js docs, a Reddit reply, the
+    // repository's homepage field, the site's sitemap), written out rather
+    // than built from PUBLIC, so that moving the page fails here unless every
+    // one still answers: the page, or a permanent redirect to it, and the old
+    // download address the newest release.  When the page moves, add the new
+    // address; remove an old one only once nothing links to it.
+    const PUBLISHED = [
+        'https://triglavmodular.hu/mods/safari-webmidi/',
+        'https://triglavmodular.hu/mods/safari-webmidi',
+        'https://triglavmodular.hu/mods/safari-webmidi/Web-MIDI.dmg',
+    ];
+    const routes = [...toml.matchAll(/pattern = "([^"]+)"/g)].map(m =>
+        new RegExp('^' + m[1].replace(/[.?+^$()[\]{}|\\]/g, '\\$&').replace(/\*/g, '.*') + '$'));
+    const canonical = /<link rel="canonical" href="([^"]+)">/.exec(page);
+    const ogUrl = /<meta property="og:url" content="([^"]+)">/.exec(page);
+    const ldUrl = /"url": "(https:\/\/triglavmodular\.hu\/mods\/[^"]+)"/.exec(page);
+    check('page: canonical is a published address', canonical && PUBLISHED.includes(canonical[1]), canonical && canonical[1]);
+    check('page: og:url and the structured data name the canonical',
+          canonical && ogUrl && ldUrl && ogUrl[1] === canonical[1] && ldUrl[1] === canonical[1],
+          [ogUrl && ogUrl[1], ldUrl && ldUrl[1]]);
+    // The origin, faked: any page it is asked for is there.
+    globalThis.fetch = async () => new Response('<!doctype html>', { status: 200, headers: { 'content-type': 'text/html' } });
+    for (const address of PUBLISHED) {
+        const hops = [];
+        let url = address, res = null;
+        try {
+            for (let i = 0; i < 4; i++) {
+                const u = new URL(url);
+                if (!routes.some(r => r.test(u.host + u.pathname))) { hops.push('no route: ' + url); break; }
+                res = await worker.fetch(new Request(url), {}, { waitUntil() {} });
+                hops.push(res.status + ' ' + url);
+                const to = res.headers.get('location');
+                if (!to || to === LATEST || !to.startsWith(SITE + '/')) break;
+                url = to;
+            }
+        } catch (e) { hops.push(String(e)); }
+        const last = hops[hops.length - 1] || '';
+        const end = res && res.headers.get('location');
+        if (address.endsWith('.dmg')) {
+            check('published: ' + address + ' goes to the newest release', res && res.status === 302 && end === LATEST, hops);
+        } else {
+            // Moved for good, never for now: a 302 would leave the old address
+            // as the one search engines keep.
+            const permanent = hops.slice(0, -1).every(h => /^30[18] /.test(h));
+            check('published: ' + address + ' serves the page', last.startsWith('200 ') && permanent, hops);
+        }
+    }
+
     fs.rmSync(tmp, { recursive: true });
     console.log(failed ? `${failed} failed` : 'all passed');
     process.exitCode = failed ? 1 : 0;

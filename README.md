@@ -225,6 +225,17 @@ What these cannot reach is Safari's own plumbing (the extension store,
 <https://triglavmodular.hu/mods/safari-webmidi/> by the worker in `deploy/`
 (`npx wrangler deploy`).
 
+**That address is published.** Other sites link to it, the WEBMIDI.js docs
+among them, and so do this repository's homepage field and the site's
+sitemap. It never changes without a permanent (301) redirect from the old
+address, and the old `…/Web-MIDI.dmg` keeps going to the newest release.
+`tests/deploy/test-worker.js` holds these addresses as written and fails
+unless each still answers through the worker and the route. When the page
+moves, add the new address there, and remove an old one only once nothing
+links to it. Renaming this repository breaks the page as well: GitHub
+redirects everything after a rename except a project's Pages address, so
+`ORIGIN` in the worker has to change in the same commit.
+
 The link preview, `site/images/og-card.png`, is drawn by
 `python3 tools/make-og-card.py` (Pillow) and committed. Redraw it when the
 app icon, the wave or the page's `--bg` changes, and put the stamp it prints
