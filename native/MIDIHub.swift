@@ -39,6 +39,7 @@ final class MIDIHub {
     private var outPort = MIDIPortRef()
     private var connected = Set<MIDIUniqueID>()
     private let lock = NSLock()
+    private let connectLock = NSLock()
 
     struct Event { let port: String; let bytes: [UInt8]; let time: Double; let sysex: Bool }
     // This process, for the background: sequence numbers mean nothing in
@@ -85,7 +86,23 @@ final class MIDIHub {
 
     private(set) var setupError: String?
 
+    // The client is made on a thread of its own that then runs its run loop.
+    // Made on the worker thread of the first request, as it was, it often
+    // never saw ports another process added or removed (2026-10-07: the
+    // port test saw four ports of eight, in 3 runs of 3); why the run loop
+    // matters is not established, since notifications arrive on CoreMIDI's
+    // own queue.
     private init() {
+        let made = DispatchSemaphore(value: 0)
+        let thread = Thread { [self] in
+            setUp()
+            made.signal()
+            CFRunLoopRun()
+        }
+        thread.start()
+        made.wait()
+    }
+    private func setUp() {
         var status = MIDIClientCreateWithBlock("Web MIDI for Safari" as CFString, &client) { [weak self] _ in
             self?.setupChanged()
         }
@@ -96,7 +113,7 @@ final class MIDIHub {
         }
         if status == noErr { status = MIDIOutputPortCreate(client, "out" as CFString, &outPort) }
         if status != noErr { setupError = "CoreMIDI refused the client (\(status))" }
-        lock.lock(); connectSources(); cachedGen = generation(); lock.unlock()
+        connectSources(); cachedGen = generation()
     }
 
     // --- clocks --------------------------------------------------------------
@@ -196,8 +213,13 @@ final class MIDIHub {
             .joined(separator: ",")
     }
 
-    // Must hold the lock.
+    // Never with the lock held.  Connecting a source waits until CoreMIDI's
+    // input thread is idle, and that thread waits for the lock in received():
+    // a port arriving while another input was delivering locked the
+    // extension up for good, every request waiting for the lock (sampled
+    // 2026-10-07).  connectLock keeps `connected` to one caller at a time.
     private func connectSources() {
+        connectLock.lock(); defer { connectLock.unlock() }
         let present = MIDIHub.sources()
         for src in present {
             let uid = MIDIHub.uniqueID(src)
@@ -209,9 +231,9 @@ final class MIDIHub {
     }
 
     private func setupChanged() {
-        lock.lock()
         connectSources()
         let gen = generation()
+        lock.lock()
         let fire = gen != cachedGen ? takeWaiters() : []
         cachedGen = gen
         lock.unlock()
@@ -425,11 +447,9 @@ final class MIDIHub {
         if let err = setupError { reply(["error": err]); return }
         switch req["cmd"] as? String {
         case "ports":
-            lock.lock()
             connectSources()
-            cachedGen = generation()
-            let gen = cachedGen
-            lock.unlock()
+            let gen = generation()
+            lock.lock(); cachedGen = gen; lock.unlock()
             reply([
                 "gen": gen,
                 "inputs": MIDIHub.sources().map(MIDIHub.describe),
@@ -493,9 +513,10 @@ final class MIDIHub {
             waiters.append((token, pinned, sysex, reply))
             lock.unlock()
             DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(wait)) { [self] in
-                lock.lock()
                 connectSources()
-                cachedGen = generation()
+                let gen = generation()
+                lock.lock()
+                cachedGen = gen
                 let mine = waiters.firstIndex { $0.token == token }
                 if let i = mine { waiters.remove(at: i) }
                 lock.unlock()

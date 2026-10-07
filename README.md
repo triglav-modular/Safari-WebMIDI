@@ -171,7 +171,8 @@ fails.
 ```
 
 MIDIHub against a virtual CoreMIDI loop: order, sysex up to 10 kB, timestamps, the page's spacing,
-`clear()`, port changes.
+`clear()`, port changes. Then against ports in another process, which come and go while one of
+them streams: no request may lock up, and the port list must follow them.
 
 ```bash
 ./tools/test-webkit.sh
